@@ -278,11 +278,17 @@ cmd_doctor() {
     compose exec -T awg cat /proc/sys/net/ipv4/ip_forward 2>/dev/null | grep -q 1
     check "ip-forward" $? "net.ipv4.ip_forward inside awg netns"
 
-    local domain hub
+    local domain hub n=0 dns_ok=1
     domain=$(env_get AWG_MESH_DOMAIN awg)
     hub=$(python3 -c "import ipaddress;print(ipaddress.ip_network('$AWG_MESH_SUBNET').network_address + 1)")
-    compose exec -T dns nslookup "hub.$domain" "$hub" 2>/dev/null | grep -q "$hub"
-    check "magicdns" $? "hub.$domain resolves to $hub via dnsmasq"
+    # dnsmasq sidecar needs a moment (apk add + bind on awg0).
+    while [ "$n" -lt 15 ]; do
+      if compose exec -T dns nslookup "hub.$domain" "$hub" 2>/dev/null | grep -q "$hub"; then
+        dns_ok=0; break
+      fi
+      sleep 1; n=$((n + 1))
+    done
+    check "magicdns" $dns_ok "hub.$domain resolves to $hub via dnsmasq"
 
     docker port amnezia-mesh-awg 2>/dev/null | grep -q ":$AWG_MESH_PORT"
     check "port-published" $? "udp $AWG_MESH_PORT -> 41480"
