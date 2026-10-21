@@ -1,0 +1,144 @@
+# amnezia-mesh
+
+Self-hosted WireGuard mesh with AmneziaWG traffic obfuscation, MagicDNS and
+Tailscale-style exit/mesh profiles — on a single VPS, in ~10 minutes, with no
+dependencies beyond Docker.
+
+Think "your own Tailscale", but you own every hop: one small server, the
+official Amnezia app on your devices, and no coordination servers, no accounts,
+no third-party relays.
+
+## Features
+
+- **CGNAT mesh network** (`100.64.0.0/24`, RFC 6598) — every device gets a
+  stable IP; SSH/ping between devices work through the hub, like `tailscale ssh`.
+- **AmneziaWG 3.1 obfuscation** — junk-packet handshakes, header type
+  substitution, header protection key, random padding/trailers. Parameters are
+  **randomized per deployment**, so DPI fingerprints differ between installs.
+- **MagicDNS** — dnsmasq on the hub answers `<device>.<domain>` (e.g.
+  `laptop.awg`) and forwards everything else to your upstream resolver through
+  the tunnel.
+- **Exit + mesh profiles per device** — `exit` routes all traffic through the
+  VPS (censorship circumvention); `mesh` routes only the CGNAT subnet, leaving
+  the internet direct. Both are generated for every device.
+- **Native Amnezia app profiles** (`vpn://`) plus plain `.conf` for any
+  awg/wg-compatible client.
+- **Version-agnostic by design** — the AWG image is an external, replaceable
+  dependency; all logic lives on the host (see *Design* below).
+- **Agent-friendly CLI** — every command has `--json` output, env-var
+  overrides and a non-interactive mode.
+
+## Requirements
+
+- A VPS with a public IP, Docker with the compose plugin, and `python3`.
+- UDP port open in the VPS firewall (443/udp recommended — it blends into
+  QUIC-looking traffic and is the hardest for ISPs to shape).
+
+## Quickstart (human)
+
+```sh
+git clone https://github.com/<you>/amnezia-mesh && cd amnezia-mesh
+
+./bin/awg-mesh init --host YOUR_IP_OR_DOMAIN --port 443
+./bin/awg-mesh peer add laptop
+# → prints: config/peers/laptop-exit.vpn, laptop-mesh.vpn, plus .conf variants
+# import the .vpn link into the Amnezia app on the device
+
+./bin/awg-mesh peer add phone
+./bin/awg-mesh doctor      # post-install self-checks
+./bin/awg-mesh monitoring install   # optional: cron stats + watchdog
+```
+
+On the device: Amnezia app → import the `vpn://` link → connect. Devices can
+now reach each other by IP (`100.64.0.x`) or name (`phone.awg`).
+
+## Quickstart (agent / automation)
+
+```sh
+export AWG_MESH_NONINTERACTIVE=1
+./bin/awg-mesh --json init --host 198.51.100.10 --port 443
+./bin/awg-mesh --json peer add laptop
+./bin/awg-mesh --json doctor        # exit code 0 = all checks green
+```
+
+Output is a single JSON object per command; failures set a non-zero exit code
+and `{"ok": false, "error": "..."}`.
+
+## Commands
+
+| Command | Description |
+|---|---|
+| `awg-mesh init [--host H] [--port P] [--subnet CIDR] [--image IMG] [--domain D] [--rdp-reject]` | Generate keys + random obfuscation, render configs, start containers |
+| `awg-mesh peer add <name> [--type exit\|mesh\|both]` | New device: keys, IP, profiles (applied without downtime via `awg syncconf`) |
+| `awg-mesh peer list` | Devices, IPs, creation dates |
+| `awg-mesh peer revoke <name>` | Remove device (syncconf, profiles deleted) |
+| `awg-mesh doctor [--json]` | Docker, containers, listen port, ip_forward, MagicDNS, port publishing |
+| `awg-mesh monitoring install\|uninstall` | Cron stats (`/var/log/amnezia-mesh-stats.log`) + watchdog |
+
+## Design: why AmneziaWG version updates don't matter
+
+1. **The AWG image is a plain dependency.** `docker-compose.yml` references
+   `amneziavpn/amneziawg-go` (override with `--image` or `AWG_MESH_IMAGE`).
+   Nothing is forked or patched; swapping the image tag needs no project
+   changes.
+2. **All logic lives on the host.** The server config, dnsmasq config and the
+   container entrypoint (iptables bootstrap: forwarding, MASQUERADE, MSS clamp,
+   optional RDP-UDP reject) are generated into `config/` and bind-mounted.
+   Recreating or upgrading the container loses nothing.
+3. **The interface is the stable UAPI.** `awg0.conf` parameters (Jc/S/H,
+   HeaderProtectionKey, timers) are part of the AWG protocol and don't change
+   across releases. Experimental `I1`–`I5` (CPS) parameters are probed at
+   `init` time; the project records support and stays compatible either way.
+4. **Profiles are the app's native format.** `vpn://` profiles are
+   byte-compatible with what the official Amnezia app exports
+   (`base64url(uint32_be(len) + zlib(json, 9))`, compact separators — verified
+   byte-identical). New app releases keep importing them.
+
+## Layout
+
+```
+docker-compose.yml      awg container + dnsmasq sidecar (shared netns)
+bin/awg-mesh            CLI entrypoint
+lib/common.sh           docker-based keygen, I1-I5 probe, peer db helpers
+lib/render.py           renders awg0.conf / dnsmasq.conf / start.sh from state
+lib/profile.py          vpn:// codec + .conf renderer (roundtrip-tested)
+scripts/                optional monitoring (stats, watchdog, cron)
+tests/roundtrip.sh      codec self-test against real Amnezia profiles
+config/                 generated secrets + state — gitignored, stays on host
+```
+
+## How the mesh works (30 seconds)
+
+WireGuard is cryptokey routing: each packet is encrypted to a peer's public
+key, and `AllowedIPs` maps destination IPs to peers. A phone pinging
+`100.64.0.4` encrypts to the **hub's** key — it never learns the macbook's real
+address. The hub decrypts, re-encrypts to the macbook's key, and forwards.
+This is hub-and-spoke (routed mesh), not P2P: it works behind any NAT,
+including carrier-grade mobile NATs where hole punching is useless.
+`PersistentKeepalive=25` on both sides keeps NAT mappings alive so devices are
+mutually reachable.
+
+## Hardening notes
+
+- `config/` contains private keys — it is gitignored, mode 600, and never
+  leaves the server. Back it up encrypted if you rebuild the VPS.
+- Keep the VPS firewall default-deny; allow only SSH and your chosen UDP port
+  (443/udp blends best with normal HTTPS/QUIC traffic).
+- Obfuscation defeats DPI **fingerprints**, not traffic volume analysis. It
+  is not a substitute for Tor when facing a global passive adversary.
+- `--rdp-reject` helps RDP over the tunnel (forces instant TCP fallback of the
+  UDP graphics channel). Enable it in `init` if you RDP through the mesh.
+
+## Troubleshooting
+
+| Symptom | Check |
+|---|---|
+| Device won't connect | `awg-mesh doctor`; VPS firewall allows the UDP port |
+| Long "connecting", then "connected" but no internet | Almost always the wrong/stale profile on the device: check which profile is active in the app and delete old/test ones |
+| Domains don't resolve on device | `doctor` magicdns check; device profile must use hub DNS (generated profiles do) |
+| Slow throughput | MTU is 1280 by design (headroom for padding); check `steal`/CPU on small VPS plans |
+| `Protocol not supported` from `awg` CLI | known amneziawg-tools quirk on single-key queries; use full `awg show` — cosmetic only |
+
+## License
+
+MIT

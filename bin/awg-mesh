@@ -1,0 +1,338 @@
+#!/usr/bin/env bash
+# amnezia-mesh — self-hosted WireGuard mesh with AmneziaWG obfuscation,
+# MagicDNS and Tailscale-style exit/mesh profiles.
+#
+# Usage:
+#   awg-mesh init [--host H] [--port P] [--subnet CIDR] [--image IMG] [--rdp-reject]
+#   awg-mesh peer add <name> [--type exit|mesh|both]
+#   awg-mesh peer list
+#   awg-mesh peer revoke <name>
+#   awg-mesh doctor
+#   awg-mesh monitoring install|uninstall
+# Global: --json (machine-readable output), env overrides AWG_MESH_*.
+set -euo pipefail
+
+# shellcheck source=../lib/common.sh
+. "$(cd "$(dirname "$0")" && pwd)/../lib/common.sh"
+
+JSON=0
+args=()
+for a in "$@"; do
+  if [ "$a" = "--json" ]; then JSON=1; else args+=("$a"); fi
+done
+set -- "${args[@]}"
+
+say() { if [ "$JSON" = 0 ]; then log "$*"; fi; return 0; }
+out() { if [ "$JSON" = 0 ]; then printf '%s\n' "$*"; fi; return 0; }
+
+fail() { # user-facing error; json-aware
+  if [ "$JSON" = 1 ]; then
+    printf '{"ok":false,"error":%s}\n' \
+      "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$*")"
+  else
+    log "amnezia-mesh: error: $*"
+  fi
+  exit 1
+}
+
+ok_json() { if [ "$JSON" = 1 ]; then printf '{"ok":true,%s}\n' "$1"; fi; return 0; }
+
+require_cmd docker
+require_cmd python3
+docker compose version >/dev/null 2>&1 || fail "docker compose plugin missing"
+
+# -----------------------------------------------------------------------------
+
+gen_obfuscation() { # -> KEY=VALUE lines for server.env
+  python3 - <<'PY'
+import base64, os, random
+r = random.SystemRandom()
+jmin = r.randint(10, 20)
+print(f"OBF_JC={r.randint(3, 7)}")
+print(f"OBF_JMIN={jmin}")
+print(f"OBF_JMAX={r.randint(jmin + 30, jmin + 50)}")
+for i, v in enumerate(r.sample(range(30, 220), 4), 1):
+    print(f"OBF_S{i}={v}")
+for i, v in enumerate(r.sample(range(1, 2**32), 4), 1):
+    print(f"OBF_H{i}={v}")
+print(f"OBF_HEADERPROTECTIONKEY={base64.b64encode(os.urandom(32)).decode()}")
+print("OBF_CONTENTPADDINGADDITION=2-10")
+print("OBF_REKEYAFTERTIME=120-180")
+print("OBF_REKEYTIMEOUT=5-10")
+print("OBF_REJECTAFTERTIME=540-600")
+print("OBF_KEEPALIVETIMEOUT=8-12")
+print("OBF_MAXHANDSHAKEATTEMPTS=80-100")
+print("OBF_RANDOMTRAILERS=on")
+print("OBF_DISABLECOOKIES=on")
+PY
+}
+
+cmd_init() {
+  local host="" port="443" subnet="100.64.0.0/24" image="amneziavpn/amneziawg-go:latest"
+  local rdp="0" domain="awg"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --host) host="$2"; shift 2 ;;
+      --port) port="$2"; shift 2 ;;
+      --subnet) subnet="$2"; shift 2 ;;
+      --image) image="$2"; shift 2 ;;
+      --domain) domain="$2"; shift 2 ;;
+      --rdp-reject) rdp="1"; shift ;;
+      *) fail "unknown init option: $1" ;;
+    esac
+  done
+  if [ -f "$ENV_FILE" ]; then
+    fail "already initialized: $ENV_FILE exists (delete config/ to start over)"
+  fi
+  if [ -z "$host" ]; then
+    if [ "${AWG_MESH_NONINTERACTIVE:-0}" = "1" ]; then
+      fail "--host is required in non-interactive mode"
+    fi
+    printf 'Public host or IP of this server: ' >&2; read -r host
+  fi
+  [ -n "$host" ] || fail "host is required"
+
+  say "pulling image $image ..."
+  docker pull "$image" >/dev/null 2>&1 || fail "docker pull failed: $image"
+
+  say "probing image for I1-I5 (CPS) support ..."
+  local i_sup
+  i_sup=$(probe_i_support "$image")
+  if [ "$i_sup" = "NO_AWGQUICK" ]; then
+    fail "image $image has no awg-quick; use the standard amnezia/amneziawg-go image"
+  fi
+
+  say "generating server keys and obfuscation profile ..."
+  local server_priv="" server_pub=""
+  read -r server_priv server_pub <<<"$(gen_keypair "$image")"
+
+  mkdir -p "$AWG_MESH_ROOT/config/peers"
+  : > "$PEERS_DB"
+  {
+    echo "# amnezia-mesh server state. Local secrets — never commit."
+    echo "AWG_MESH_HOST=$host"
+    echo "AWG_MESH_PORT=$port"
+    echo "AWG_MESH_SUBNET=$subnet"
+    echo "AWG_MESH_DOMAIN=$domain"
+    echo "AWG_MESH_DNS1=1.1.1.1"
+    echo "AWG_MESH_DNS2=1.0.0.1"
+    echo "AWG_MESH_IMAGE=$image"
+    echo "AWG_MESH_RDP_REJECT=$rdp"
+    echo "AWG_MESH_I_SUPPORTED=$([ "$i_sup" = SUPPORTED ] && echo 1 || echo 0)"
+    echo "LISTEN_PORT=41480"
+    echo "MTU=1280"
+    echo "SERVER_KEEPALIVE=25"
+    echo "CLIENT_KEEPALIVE=15-20"
+    echo "SERVER_PRIV=$server_priv"
+    echo "SERVER_PUB=$server_pub"
+    gen_obfuscation
+  } > "$ENV_FILE"
+  chmod 600 "$ENV_FILE"
+
+  python3 "$AWG_MESH_ROOT/lib/render.py" all
+
+  say "starting containers ..."
+  compose up -d || fail "docker compose up failed"
+
+  if ! cmd_doctor >/dev/null; then
+    fail "post-start checks failed (see: awg-mesh doctor)"
+  fi
+
+  out ""
+  out "amnezia-mesh is up."
+  out "Next: awg-mesh peer add <device-name>   # then import the printed vpn:// link in the Amnezia app"
+  ok_json "\"host\":\"$host\",\"port\":$port,\"subnet\":\"$subnet\",\"i_supported\":$([ "$i_sup" = SUPPORTED ] && echo true || echo false)"
+}
+
+apply_conf() { # push awg0.conf into the running container, reload dns
+  # syncconf only understands [Peer] sections ([Interface] keys like Address
+  # are wg-quick-isms and rejected), so strip the interface block first.
+  local peers_only
+  peers_only=$(awk 'BEGIN{skip=0} /^\[Interface\]/{skip=1;next} /^\[/{skip=0} skip==0{print}' \
+    "$AWG_MESH_ROOT/config/awg0.conf")
+  if printf '%s\n' "$peers_only" | compose exec -T awg awg syncconf awg0 /dev/stdin >/dev/null 2>&1; then
+    say "applied via awg syncconf (no downtime)"
+  else
+    say "syncconf failed, restarting awg container"
+    compose restart awg >/dev/null
+  fi
+  compose restart dns >/dev/null 2>&1 || true
+  return 0
+}
+
+cmd_peer_add() {
+  [ $# -ge 1 ] || fail "usage: awg-mesh peer add <name> [--type exit|mesh|both]"
+  local name="$1"; shift
+  local type="both"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --type) type="$2"; shift 2 ;;
+      *) fail "unknown option: $1" ;;
+    esac
+  done
+  valid_name "$name" || fail "invalid peer name: $name (lowercase letters, digits, dash, max 32)"
+  case "$type" in exit|mesh|both) ;; *) fail "--type must be exit|mesh|both" ;; esac
+  [ -f "$ENV_FILE" ] || fail "not initialized (run: awg-mesh init)"
+  load_env
+  if grep -q "^$name	" "$PEERS_DB" 2>/dev/null; then
+    fail "peer already exists: $name"
+  fi
+
+  local ip
+  ip=$(next_free_ip "$AWG_MESH_SUBNET")
+  [ -n "$ip" ] || fail "subnet $AWG_MESH_SUBNET exhausted"
+
+  say "generating keys for $name ..."
+  local priv="" pub="" psk=""
+  read -r priv pub <<<"$(gen_keypair "$AWG_MESH_IMAGE")"
+  psk=$(gen_psk "$AWG_MESH_IMAGE")
+
+  printf '%s\t%s\t%s\t%s\t%s\n' "$name" "$ip" "$pub" "$psk" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$PEERS_DB"
+  python3 "$AWG_MESH_ROOT/lib/render.py" all
+  apply_conf
+
+  local prefix="$AWG_MESH_ROOT/config/peers/$name"
+  python3 "$AWG_MESH_ROOT/lib/profile.py" gen --env "$ENV_FILE" --name "$name" \
+    --ip "$ip" --priv "$priv" --pub "$pub" --psk "$psk" --out-prefix "$prefix"
+
+  out ""
+  out "peer '$name' added: $ip (profiles: $prefix-exit.vpn / $prefix-mesh.vpn)"
+  out "import the .vpn link in the Amnezia app, or use the .conf with any awg/wg client"
+  ok_json "\"name\":\"$name\",\"ip\":\"$ip\",\"profiles\":[\"$prefix-exit.vpn\",\"$prefix-mesh.vpn\"]"
+}
+
+cmd_peer_list() {
+  [ -f "$ENV_FILE" ] || fail "not initialized (run: awg-mesh init)"
+  load_env
+  if [ ! -s "$PEERS_DB" ]; then
+    out "no peers"
+    ok_json '"peers":[]'
+    return 0
+  fi
+  local json="[" first=1
+  while IFS=$'\t' read -r name ip pub psk created; do
+    if [ $first = 1 ]; then first=0; else json+=","; fi
+    json+="{\"name\":\"$name\",\"ip\":\"$ip\",\"created\":\"$created\"}"
+    if [ "$JSON" = 0 ]; then printf '%-20s %-15s %s\n' "$name" "$ip" "$created"; fi
+  done < "$PEERS_DB"
+  json+="]"
+  ok_json "\"peers\":$json"
+  return 0
+}
+
+cmd_peer_revoke() {
+  [ $# -ge 1 ] || fail "usage: awg-mesh peer revoke <name>"
+  local name="$1"
+  [ -f "$ENV_FILE" ] || fail "not initialized (run: awg-mesh init)"
+  load_env
+  grep -q "^$name	" "$PEERS_DB" 2>/dev/null || fail "no such peer: $name"
+  confirm "revoke peer '$name'? its devices will lose access" || fail "aborted"
+  grep -v "^$name	" "$PEERS_DB" > "$PEERS_DB.tmp" && mv "$PEERS_DB.tmp" "$PEERS_DB"
+  python3 "$AWG_MESH_ROOT/lib/render.py" all
+  apply_conf
+  rm -f "$AWG_MESH_ROOT/config/peers/$name-"*.vpn "$AWG_MESH_ROOT/config/peers/$name-"*.conf
+  say "peer '$name' revoked"
+  ok_json "\"revoked\":\"$name\""
+}
+
+cmd_doctor() {
+  set +e
+  local fails=0 json="[" first=1
+  check() { # check <name> <rc 0/1> <detail>
+    if [ $first = 1 ]; then first=0; else json+=","; fi
+    if [ "$2" = 0 ]; then
+      json+="{\"name\":\"$1\",\"ok\":true,\"detail\":$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$3")}"
+      if [ "$JSON" = 0 ]; then printf 'ok    %-18s %s\n' "$1" "$3"; fi
+    else
+      json+="{\"name\":\"$1\",\"ok\":false,\"detail\":$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$3")}"
+      if [ "$JSON" = 0 ]; then printf 'FAIL  %-18s %s\n' "$1" "$3"; fi
+      fails=$((fails + 1))
+    fi
+  }
+
+  docker info >/dev/null 2>&1
+  check "docker-daemon" $? "docker daemon reachable"
+
+  [ -f "$ENV_FILE" ]
+  check "initialized" $? "$ENV_FILE"
+
+  if [ -f "$ENV_FILE" ]; then
+    load_env
+    compose ps --format '{{.Name}} {{.Status}}' 2>/dev/null | grep -q "amnezia-mesh-awg.*Up"
+    check "awg-container" $? "$(compose ps --format '{{.Status}}' awg 2>/dev/null | head -1)"
+    compose ps --format '{{.Name}} {{.Status}}' 2>/dev/null | grep -q "amnezia-mesh-dns.*Up"
+    check "dns-container" $? "$(compose ps --format '{{.Status}}' dns 2>/dev/null | head -1)"
+
+    # The userspace daemon needs a moment after container start. Note:
+    # `awg show <iface> listen-port` misbehaves in amneziawg-tools (kernel
+    # netlink fallback) — parse the full `awg show` output instead.
+    local listen="" n=0
+    while [ "$n" -lt 15 ]; do
+      listen=$(compose exec -T awg awg show 2>/dev/null | awk '/listening port:/ {print $3}')
+      [ -n "$listen" ] && break
+      sleep 1; n=$((n + 1))
+    done
+    [ -n "$listen" ]
+    check "listen-port" $? "awg0 listens on $listen"
+
+    compose exec -T awg cat /proc/sys/net/ipv4/ip_forward 2>/dev/null | grep -q 1
+    check "ip-forward" $? "net.ipv4.ip_forward inside awg netns"
+
+    local domain hub
+    domain=$(env_get AWG_MESH_DOMAIN awg)
+    hub=$(python3 -c "import ipaddress;print(ipaddress.ip_network('$AWG_MESH_SUBNET').network_address + 1)")
+    compose exec -T dns nslookup "hub.$domain" "$hub" 2>/dev/null | grep -q "$hub"
+    check "magicdns" $? "hub.$domain resolves to $hub via dnsmasq"
+
+    docker port amnezia-mesh-awg 2>/dev/null | grep -q ":$AWG_MESH_PORT"
+    check "port-published" $? "udp $AWG_MESH_PORT -> 41480"
+  fi
+
+  json+="]"
+  if [ "$JSON" = 1 ]; then
+    printf '{"ok":%s,"checks":%s}\n' "$([ "$fails" = 0 ] && echo true || echo false)" "$json"
+  fi
+  set -e
+  [ "$fails" = 0 ]
+}
+
+cmd_monitoring() {
+  local action="${1:-}"
+  case "$action" in
+    install)
+      sudo cp "$AWG_MESH_ROOT/scripts/awg-stats.sh" "$AWG_MESH_ROOT/scripts/awg-watchdog.sh" /usr/local/sbin/ \
+        && sudo cp "$AWG_MESH_ROOT/scripts/amnezia-mesh.cron" /etc/cron.d/amnezia-mesh \
+        || fail "install failed (sudo?)"
+      say "monitoring installed: /usr/local/sbin/awg-{stats,watchdog}.sh + /etc/cron.d/amnezia-mesh"
+      ok_json '"installed":true' ;;
+    uninstall)
+      sudo rm -f /usr/local/sbin/awg-stats.sh /usr/local/sbin/awg-watchdog.sh /etc/cron.d/amnezia-mesh \
+        || fail "uninstall failed (sudo?)"
+      say "monitoring removed"
+      ok_json '"installed":false' ;;
+    *) fail "usage: awg-mesh monitoring install|uninstall" ;;
+  esac
+}
+
+# -----------------------------------------------------------------------------
+
+if [ $# -lt 1 ]; then
+  sed -n '3,13p' "$0" >&2
+  exit 2
+fi
+cmd="$1"; shift
+case "$cmd" in
+  init) cmd_init "$@" ;;
+  doctor) cmd_doctor "$@" ;;
+  monitoring) cmd_monitoring "$@" ;;
+  peer)
+    if [ $# -lt 1 ]; then fail "usage: awg-mesh peer add|list|revoke ..."; fi
+    sub="$1"; shift
+    case "$sub" in
+      add) cmd_peer_add "$@" ;;
+      list) cmd_peer_list "$@" ;;
+      revoke) cmd_peer_revoke "$@" ;;
+      *) fail "unknown peer subcommand: $sub" ;;
+    esac ;;
+  *) fail "unknown command: $cmd" ;;
+esac

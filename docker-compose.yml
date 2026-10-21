@@ -1,0 +1,38 @@
+name: amnezia-mesh
+
+# Environment for interpolation (AWG_IMAGE, AWG_PORT) is sourced from
+# config/server.env by bin/awg-mesh before every compose call.
+
+services:
+  awg:
+    image: ${AWG_MESH_IMAGE:-amneziavpn/amneziawg-go:latest}
+    container_name: amnezia-mesh-awg
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    volumes:
+      - /lib/modules:/lib/modules
+      - ./config/awg0.conf:/opt/amnezia/awg/awg0.conf:ro
+      - ./config/start.sh:/opt/amnezia/start.sh:ro
+    # Pinned entrypoint: the upstream image's own entrypoint is replaced by
+    # our generated start.sh, so any upstream image update cannot wipe our
+    # iptables/dnsmasq bootstrap (they live on the host, not in the image).
+    entrypoint: ["/bin/sh", "/opt/amnezia/start.sh"]
+    ports:
+      - "${AWG_MESH_PORT}:41480/udp"
+    restart: unless-stopped
+
+  dns:
+    image: alpine:3.20
+    container_name: amnezia-mesh-dns
+    # Shares the awg container network namespace: sees awg0 and binds
+    # the hub IP :53. Kept as a sidecar so the AWG image stays pristine.
+    network_mode: service:awg
+    depends_on:
+      - awg
+    volumes:
+      - ./config/dnsmasq.conf:/etc/dnsmasq.conf:ro
+    command: ["/bin/sh", "-c", "apk add --no-cache dnsmasq >/dev/null 2>&1 && exec dnsmasq -k -C /etc/dnsmasq.conf"]
+    restart: unless-stopped

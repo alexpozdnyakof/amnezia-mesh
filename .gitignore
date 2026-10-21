@@ -1,0 +1,10 @@
+# Secrets and generated state — never commit
+config/
+*.key
+*.priv
+.env
+
+# OS / editor noise
+.DS_Store
+*.swp
+__pycache__/
