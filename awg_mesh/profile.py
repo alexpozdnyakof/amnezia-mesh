@@ -139,8 +139,9 @@ def build_app_profile(env, name, ptype, peer_ip, allowed, priv, pub, psk, server
     }
 
 
-def cmd_gen(args):
-    env = load_env(args.env)
+def generate_profiles(env_file, name, ip, priv, pub, psk, out_prefix):
+    """Generate <out_prefix>-{exit,mesh}.{vpn,conf}. Returns written paths."""
+    env = load_env(env_file)
     env["HUB_IP"] = str(ipaddress.ip_network(env["AWG_MESH_SUBNET"]).network_address + 1)
     variants = {
         "exit": "0.0.0.0/0",
@@ -148,17 +149,25 @@ def cmd_gen(args):
     }
     written = []
     for ptype, allowed in variants.items():
-        prof = build_app_profile(env, args.name, ptype, args.ip, allowed,
-                                 args.priv, args.pub, args.psk, env["SERVER_PUB"])
+        prof = build_app_profile(env, name, ptype, ip, allowed,
+                                 priv, pub, psk, env["SERVER_PUB"])
         vpn = encode_profile(prof)
-        for suffix, content in ((f"{ptype}.vpn", vpn),
-                                (f"{ptype}.conf", prof["containers"][0]["awg"]["last_config"]
-                                 and json.loads(prof["containers"][0]["awg"]["last_config"])["config"])):
-            path = f"{args.out_prefix}-{suffix}"
+        outputs = {
+            f"{ptype}.vpn": vpn,
+            f"{ptype}.conf":
+                json.loads(prof["containers"][0]["awg"]["last_config"])["config"],
+        }
+        for suffix, content in outputs.items():
+            path = f"{out_prefix}-{suffix}"
             with open(path, "w") as f:
                 f.write(content)
             written.append(path)
-    for w in written:
+    return written
+
+
+def cmd_gen(args):
+    for w in generate_profiles(args.env, args.name, args.ip, args.priv,
+                               args.pub, args.psk, args.out_prefix):
         print(w)
 
 

@@ -30,7 +30,8 @@ no third-party relays.
 
 ## Requirements
 
-- A VPS with a public IP, Docker with the compose plugin, and `python3`.
+- A VPS with a public IP, Docker with the compose plugin, and `python3`
+  (>= 3.8, standard library only — no `pip install`).
 - UDP port open in the VPS firewall (443/udp recommended — it blends into
   QUIC-looking traffic and is the hardest for ISPs to shape).
 
@@ -69,9 +70,9 @@ and `{"ok": false, "error": "..."}`.
 | Command | Description |
 |---|---|
 | `awg-mesh init [--host H] [--port P] [--subnet CIDR] [--image IMG] [--domain D] [--rdp-reject]` | Generate keys + random obfuscation, render configs, start containers |
-| `awg-mesh peer add <name> [--type exit\|mesh\|both]` | New device: keys, IP, profiles (applied without downtime via `awg syncconf`) |
+| `awg-mesh peer add <name> [--type exit\|mesh\|both]` | New device: keys, IP, profiles (applied via `awg syncconf`, then the awg container is restarted — syncconf alone can silently wedge fresh handshakes in the userspace daemon) |
 | `awg-mesh peer list` | Devices, IPs, creation dates |
-| `awg-mesh peer revoke <name>` | Remove device (syncconf, profiles deleted) |
+| `awg-mesh peer revoke <name>` | Remove device (config applied, profiles deleted) |
 | `awg-mesh doctor [--json]` | Docker, containers, listen port, ip_forward, MagicDNS, port publishing |
 | `awg-mesh monitoring install\|uninstall` | Cron stats (`/var/log/amnezia-mesh-stats.log`) + watchdog |
 
@@ -98,12 +99,12 @@ and `{"ok": false, "error": "..."}`.
 
 ```
 docker-compose.yml      awg container + dnsmasq sidecar (shared netns)
-bin/awg-mesh            CLI entrypoint
-lib/common.sh           docker-based keygen, I1-I5 probe, peer db helpers
-lib/render.py           renders awg0.conf / dnsmasq.conf / start.sh from state
-lib/profile.py          vpn:// codec + .conf renderer (roundtrip-tested)
+bin/awg-mesh            CLI entrypoint (thin shim, runs from the checkout)
+awg_mesh/               python package: cli, envfile, peers, keygen, compose,
+                        render, profile, doctor (stdlib only)
 scripts/                optional monitoring (stats, watchdog, cron)
-tests/roundtrip.sh      codec self-test against real Amnezia profiles
+tests/                  pytest suite: render golden files, peers db + flock,
+                        profile codec roundtrip
 config/                 generated secrets + state — gitignored, stays on host
 ```
 
@@ -138,6 +139,18 @@ mutually reachable.
 | Domains don't resolve on device | `doctor` magicdns check; device profile must use hub DNS (generated profiles do) |
 | Slow throughput | MTU is 1280 by design (headroom for padding); check `steal`/CPU on small VPS plans |
 | `Protocol not supported` from `awg` CLI | known amneziawg-tools quirk on single-key queries; use full `awg show` — cosmetic only |
+
+## Tests
+
+```sh
+python3 -m venv .venv && .venv/bin/pip install pytest
+.venv/bin/python -m pytest tests/ -q
+```
+
+The suite needs no Docker and no network: server config rendering is diffed
+byte-for-byte against golden files produced by the original implementation,
+the peers db is hammered concurrently to prove `flock` serialization, and the
+`vpn://` codec is roundtrip-tested.
 
 ## License
 

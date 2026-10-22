@@ -14,7 +14,8 @@ import re
 import stat
 import sys
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.environ.get("AWG_MESH_ROOT") or os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__)))
 ENV_FILE = os.path.join(ROOT, "config", "server.env")
 PEERS_DB = os.path.join(ROOT, "config", "peers.db")
 
@@ -163,19 +164,39 @@ def write(path, content, executable=False, mode=None):
         os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
+def render_all():
+    env = load_env(ENV_FILE)
+    peer_list = load_peers(PEERS_DB)
+    out_dir = os.path.join(ROOT, "config")
+    # 0o600: awg-quick warns on world-readable configs that contain secrets.
+    write(os.path.join(out_dir, "awg0.conf"), render_awg0(env, peer_list),
+          mode=0o600)
+    write(os.path.join(out_dir, "dnsmasq.conf"), render_dnsmasq(env, peer_list))
+    write(os.path.join(out_dir, "start.sh"), render_start_sh(env),
+          executable=True)
+    return len(peer_list)
+
+
 def main():
     which = sys.argv[1] if len(sys.argv) > 1 else "all"
+    if which == "all":
+        print(f"rendered: all ({render_all()} peers)")
+        return
     env = load_env(ENV_FILE)
-    peers = load_peers(PEERS_DB)
-    out = os.path.join(ROOT, "config")
-    if which in ("all", "awg0"):
-        # 0o600: awg-quick warns on world-readable configs that contain secrets.
-        write(os.path.join(out, "awg0.conf"), render_awg0(env, peers), mode=0o600)
-    if which in ("all", "dnsmasq"):
-        write(os.path.join(out, "dnsmasq.conf"), render_dnsmasq(env, peers))
-    if which in ("all", "start.sh"):
-        write(os.path.join(out, "start.sh"), render_start_sh(env), executable=True)
-    print(f"rendered: {which} ({len(peers)} peers)")
+    peer_list = load_peers(PEERS_DB)
+    out_dir = os.path.join(ROOT, "config")
+    if which == "awg0":
+        write(os.path.join(out_dir, "awg0.conf"), render_awg0(env, peer_list),
+              mode=0o600)
+    elif which == "dnsmasq":
+        write(os.path.join(out_dir, "dnsmasq.conf"),
+              render_dnsmasq(env, peer_list))
+    elif which == "start.sh":
+        write(os.path.join(out_dir, "start.sh"), render_start_sh(env),
+              executable=True)
+    else:
+        sys.exit("usage: render.py [all|awg0|dnsmasq|start.sh]")
+    print(f"rendered: {which} ({len(peer_list)} peers)")
 
 
 if __name__ == "__main__":
