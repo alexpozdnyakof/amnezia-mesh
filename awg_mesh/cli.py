@@ -169,18 +169,52 @@ def _utc_now():
         "%Y-%m-%dT%H:%M:%SZ")
 
 
+def _inspect_summary(parsed, image, server_pub, source):
+    """Machine-readable pre-adopt snapshot for `adopt --inspect`."""
+    return {
+        "source": source,
+        "image": image,
+        "server_pub": server_pub,
+        "subnet": parsed.subnet,
+        "mtu": parsed.env.get("MTU", ""),
+        "listen_port": parsed.env.get("LISTEN_PORT", ""),
+        "server_keepalive": parsed.keepalive or "",
+        "obfuscation_params": len([k for k in parsed.env
+                                   if k.startswith("OBF_")]),
+        "peers": [{"name": p["name"], "ip": p["ip"], "pub": p["pub"],
+                   "created": p["created"]} for p in parsed.peers],
+        "warnings": list(parsed.warnings),
+    }
+
+
+def _say_adopt_plan(parsed):
+    n_obf = len([k for k in parsed.env if k.startswith("OBF_")])
+    say(f"[Interface]: server key, {n_obf} obfuscation parameters, "
+        f"MTU {parsed.env.get('MTU', '1280')}, "
+        f"ListenPort {parsed.env.get('LISTEN_PORT', '41480')}")
+    say(f"[Peer] x{len(parsed.peers)}:")
+    for p in parsed.peers:
+        say(f"  {p['name']:<20} {p['ip']}")
+    for w in parsed.warnings:
+        say(f"warning: {w}")
+
+
 def cmd_adopt(args):
     """Migrate an existing AmneziaWG server under awg-mesh management.
 
     Carries over server key, obfuscation profile, peers (keys, PSKs, IPs)
     verbatim — client profiles keep working, nothing is reissued. The old
     container is only STOPPED (never removed) and is restarted automatically
-    if the post-adopt doctor fails.
+    if the post-adopt doctor fails. With --inspect, parses the source and
+    prints a summary instead of migrating (nothing is changed).
     """
     r = root()
     env_file = os.path.join(r, "config", "server.env")
-    if os.path.exists(env_file):
-        fail(f"already initialized: {env_file} exists (delete config/ to start over)")
+    if not args.inspect:
+        if os.path.exists(env_file):
+            fail(f"already initialized: {env_file} exists (delete config/ to start over)")
+        if not args.host:
+            fail("--host is required (public IP or domain of this server)")
 
     if args.container:
         say(f"reading config from container '{args.container}' ...")
@@ -212,18 +246,18 @@ def cmd_adopt(args):
 
     parsed = adopt.parse(conf_text)  # MeshError -> fail() in main()
 
-    n_obf = len([k for k in parsed.env if k.startswith("OBF_")])
-    say(f"[Interface]: server key, {n_obf} obfuscation parameters, "
-        f"MTU {parsed.env.get('MTU', '1280')}, "
-        f"ListenPort {parsed.env.get('LISTEN_PORT', '41480')}")
-    say(f"[Peer] x{len(parsed.peers)}:")
-    for p in parsed.peers:
-        say(f"  {p['name']:<20} {p['ip']}")
-    for w in parsed.warnings:
-        say(f"warning: {w}")
-
     say("deriving server public key ...")
     server_pub = keygen.pub_from_priv(image, parsed.env["SERVER_PRIV"])
+
+    if args.inspect:
+        summary = _inspect_summary(parsed, image, server_pub, source)
+        if JSON_MODE:
+            print(json.dumps({"ok": True, "inspect": summary}))
+        else:
+            _say_adopt_plan(parsed)
+        return 0
+
+    _say_adopt_plan(parsed)
 
     env_pairs, peer_records = adopt.build_state(
         parsed, host=args.host, port=args.port, domain=args.domain,
@@ -343,8 +377,8 @@ def cmd_peer_list(args):
         else:
             for p in plist:
                 out(f"{p['name']:<20} {p['ip']:<15} {p['created']}")
-    ok(peers=[{"name": p["name"], "ip": p["ip"], "created": p["created"]}
-              for p in plist])
+    ok(peers=[{"name": p["name"], "ip": p["ip"], "pub": p["pub"],
+               "created": p["created"]} for p in plist])
 
 
 def cmd_peer_rename(args):
@@ -460,7 +494,11 @@ def build_parser():
                           "from the container")
     src.add_argument("--config", help="path to awg0.conf on this host")
     ad.add_argument("--image", help="AWG image (required with --config)")
-    ad.add_argument("--host", required=True, help="public IP or domain")
+    ad.add_argument("--inspect", action="store_true",
+                    help="parse the source and print a summary; "
+                         "change nothing")
+    ad.add_argument("--host", help="public IP or domain (required unless "
+                                   "--inspect)")
     ad.add_argument("--port", default="443")
     ad.add_argument("--domain", default="awg")
     ad.add_argument("--dns1", default="1.1.1.1")

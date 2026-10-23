@@ -98,3 +98,24 @@ def test_concurrent_adds_serialize_without_torn_lines(tmp_path):
         lines = f.readlines()
     assert len(lines) == 8
     assert all(line.count("\t") == 4 and line.endswith("\n") for line in lines)
+
+
+# --- cmd-level: peer list --json carries pub (TUI maps awg show pubkeys) ----
+
+
+def test_cmd_peer_list_json_includes_pub(tmp_path, monkeypatch, capsys):
+    from awg_mesh import cli
+
+    monkeypatch.setattr(cli, "root", lambda: str(tmp_path))
+    cfg = tmp_path / "config"
+    cfg.mkdir()
+    (cfg / "server.env").write_text("AWG_MESH_HOST=h\n")
+    with peers.locked(str(cfg / "peers.db")) as tx:
+        tx.add({"name": "phone", "ip": "100.64.0.3", "pub": "P" * 44,
+                "psk": "K" * 44, "created": "2026-10-20T12:00:00Z"})
+    assert cli.main(["--json", "peer", "list"]) == 0
+    import json
+    out = json.loads(capsys.readouterr().out)
+    assert out["peers"] == [{"name": "phone", "ip": "100.64.0.3",
+                             "pub": "P" * 44,
+                             "created": "2026-10-20T12:00:00Z"}]

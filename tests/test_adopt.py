@@ -281,3 +281,62 @@ def test_cmd_adopt_container_source_order_and_rollback(tmp_path, monkeypatch):
         elif c[1] in ("stop", "start"):
             kinds.append(c[1])
     assert kinds == ["stop", "up", "down", "start"]
+
+
+# --- adopt --inspect: read-only pre-migration preview for the TUI wizard ----
+
+
+def test_cmd_adopt_inspect_config_source_no_mutation(tmp_path, monkeypatch,
+                                                     capsys):
+    calls = _patch_runtime(monkeypatch, tmp_path)
+    rc = cli.main(["--json", "adopt", "--inspect", "--config", GOLDEN_CONF,
+                   "--image", "img:latest"])
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    insp = out["inspect"]
+    assert out["ok"] and insp["image"] == "img:latest"
+    assert insp["server_pub"] == "D" * 44  # pub_from_priv stub
+    assert insp["subnet"] == "100.64.0.0/24"
+    assert len(insp["peers"]) == 3
+    assert {"name", "ip", "pub", "created"} <= set(insp["peers"][0])
+    assert not (tmp_path / "config" / "server.env").exists()
+    assert calls == []  # inspect never touches compose or docker stop/start
+
+
+def test_cmd_adopt_inspect_container_source_uses_docker(tmp_path,
+                                                        monkeypatch, capsys):
+    calls = _patch_runtime(monkeypatch, tmp_path)
+    _patch_docker(monkeypatch, calls, open(GOLDEN_CONF).read())
+    rc = cli.main(["--json", "adopt", "--inspect", "--container", "old-awg"])
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["inspect"]["source"] == "container 'old-awg'"
+    assert len(out["inspect"]["peers"]) == 3
+    docker_cmds = [c[1] for c in calls if c[0] == "docker"]
+    assert "exec" in docker_cmds and "inspect" in docker_cmds
+    assert "stop" not in docker_cmds and "start" not in docker_cmds
+
+
+def test_cmd_adopt_inspect_bad_conf_fails_with_json_error(tmp_path,
+                                                         monkeypatch, capsys):
+    _patch_runtime(monkeypatch, tmp_path)
+    bad = tmp_path / "bad.conf"
+    bad.write_text("[Interface]\nPrivateKey = x\nAddress = 10.0.0.1/24\n"
+                   "Foo = 1\n")
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["--json", "adopt", "--inspect", "--config", str(bad),
+                  "--image", "img"])
+    assert exc.value.code == 1
+    out = json.loads(capsys.readouterr().out)
+    assert not out["ok"] and "Foo" in out["error"]
+
+
+def test_cmd_adopt_host_required_unless_inspect(tmp_path, monkeypatch,
+                                                capsys):
+    _patch_runtime(monkeypatch, tmp_path)
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["--json", "adopt", "--config", GOLDEN_CONF,
+                  "--image", "img"])
+    assert exc.value.code == 1
+    out = json.loads(capsys.readouterr().out)
+    assert not out["ok"] and "host" in out["error"]
