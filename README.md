@@ -1,3 +1,5 @@
+**English** | [Русский](README.ru.md) | [中文](README.zh-CN.md) | [Español](README.es.md)
+
 # amnezia-mesh
 
 Self-hosted WireGuard mesh with AmneziaWG traffic obfuscation, MagicDNS and
