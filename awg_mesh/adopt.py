@@ -21,8 +21,12 @@ INTERFACE_MAP = {
 }
 OBF_MAP = {k: "OBF_" + k.upper() for k in OBF_KEYS}
 
-# Peer comment produced by render.py: "# name (added 2026-10-20T12:00:00Z)"
+# Peer comment produced by render.py: "# name (added 2026-10-20T12:00:00Z)".
+# Hand-maintained configs use any comment ("# macbook-2 (key rotated ...)"),
+# so strip any trailing parenthetical, capturing the date only for
+# "(added ...)".
 ADDED_RE = re.compile(r"^(?P<name>.+?)\s*\(added\s+(?P<created>[^)]+)\)\s*$")
+PAREN_RE = re.compile(r"\s*\([^)]*\)\s*$")
 GENERATED_NAME_LEN = 6
 
 
@@ -36,17 +40,19 @@ class ParsedConf:
 
 
 def _split_comment(text):
-    """'# name (added ...)' -> (name, created) or (text, None)."""
+    """'# name (added ...)' -> (name, created); any other '# name (note)'
+    -> (name, None)."""
     m = ADDED_RE.match(text)
     if m:
         return m.group("name").strip(), m.group("created").strip()
-    return text.strip(), None
+    return PAREN_RE.sub("", text).strip(), None
 
 
 def _sanitize_name(name):
-    """Comment names must become valid DNS-label peer names."""
-    cleaned = re.sub(r"[^a-z0-9-]+", "-", name.lower()).strip("-")
-    return cleaned or None
+    """Comment names must become valid DNS-label peer names: lowercase,
+    [a-z0-9-]{1,32}."""
+    cleaned = re.sub(r"[^a-z0-9-]+", "-", name.lower())
+    return cleaned.strip("-")[:32].strip("-") or None
 
 
 def parse(text):
@@ -149,14 +155,21 @@ def _validate(parsed):
 
 
 def _finalize_names(parsed):
-    """Fill missing names (peer-xxxx from pubkey), sanitize, dedupe."""
+    """Fill missing names (peer-xxxxxx from pubkey, sanitized), sanitize
+    comment names, enforce length/dns-label validity, dedupe."""
     seen = set()
     for peer in parsed.peers:
         name = _sanitize_name(peer["name"]) if peer["name"] else None
         if name is None:
-            name = "peer-" + peer["pub"][:GENERATED_NAME_LEN]
+            if peer["name"]:
+                parsed.warnings.append(
+                    f"peer name {peer['name']!r} could not be sanitized; "
+                    "falling back to a generated name")
+            # raw pubkey slices contain base64 chars (uppercase, /, +) —
+            # sanitize them like any other candidate name
+            name = _sanitize_name("peer-" + peer["pub"][:GENERATED_NAME_LEN])
             parsed.warnings.append(
-                f"peer {peer['pub'][:8]}… has no name comment; "
+                f"peer {peer['pub'][:8]}… has no usable name comment; "
                 f"generated '{name}'")
         elif peer["name"] != name:
             parsed.warnings.append(

@@ -87,7 +87,7 @@ def test_parse_peer_missing_psk_aborts():
 def test_peer_without_comment_gets_generated_name():
     conf = BASE_CONF.replace("# test-peer (added 2026-10-20T12:00:00Z)\n", "")
     parsed = adopt.parse(conf)
-    assert parsed.peers[0]["name"] == "peer-" + PUB[:6]
+    assert parsed.peers[0]["name"] == "peer-" + PUB[:6].lower()
     assert any("generated" in w for w in parsed.warnings)
 
 
@@ -111,6 +111,102 @@ def test_build_state_created_fallback():
         dns1="1.1.1.1", dns2="", rdp_reject=False,
         server_pub="D" * 44, now="2026-10-23T00:00:00Z")
     assert records[0]["created"] == "2026-10-23T00:00:00Z"
+
+
+# --- real-world shapes found on a hand-maintained production conf -----------
+
+def test_generated_names_from_base64_pubkeys_are_valid():
+    """Hand-maintained confs have no name comments; pubkey slices contain
+    base64 chars (uppercase, /, +) and must sanitize to valid peer names."""
+    conf = BASE_CONF.replace("# test-peer (added 2026-10-20T12:00:00Z)\n", "")
+    parsed = adopt.parse(conf)
+    for peer in parsed.peers:
+        assert peers.valid_name(peer["name"]), peer["name"]
+
+
+def test_non_added_parenthetical_is_stripped():
+    conf = BASE_CONF.replace("# test-peer (added 2026-10-20T12:00:00Z)",
+                             "# macbook-2 (key rotated 2026-10-27, "
+                             "was 1qtP0Bz2 without PSK)")
+    parsed = adopt.parse(conf)
+    assert parsed.peers[0]["name"] == "macbook-2"
+    assert parsed.peers[0]["created"] is None
+
+
+def test_overlong_comment_name_is_truncated_to_valid():
+    long_note = "some very long hand written comment about this device " * 3
+    conf = BASE_CONF.replace("# test-peer (added 2026-10-20T12:00:00Z)",
+                             f"# {long_note}")
+    parsed = adopt.parse(conf)
+    name = parsed.peers[0]["name"]
+    assert len(name) <= 32
+    assert peers.valid_name(name)
+
+
+def test_prod_shaped_conf_produces_valid_state(tmp_path, monkeypatch):
+    """Peer mix from the real server: unnamed peers with base64 keys, one
+    long hand-written note. adopt -> render must succeed end to end."""
+    conf = f"""[Interface]
+PrivateKey = {PRIV}
+Address = 100.64.0.1/24
+ListenPort = 41480
+MTU = 1280
+Jc = 5
+Jmin = 14
+Jmax = 52
+S1 = 37
+S2 = 34
+S3 = 200
+S4 = 128
+H1 = 1641846015
+H2 = 1919277141
+H3 = 1925319215
+H4 = 4119105387
+HeaderProtectionKey = {PSK}
+ContentPaddingAddition = 2-10
+RekeyAfterTime = 120-180
+RekeyTimeout = 5-10
+RejectAfterTime = 540-600
+KeepaliveTimeout = 8-12
+MaxHandshakeAttempts = 80-100
+RandomTrailers = on
+DisableCookies = on
+
+[Peer]
+PublicKey = {"D38w6bG59pL7AdUC" + "x" * 27}=
+PresharedKey = {PSK}
+AllowedIPs = 100.64.0.1/32
+PersistentKeepalive = 25
+
+[Peer]
+PublicKey = {"0idOZrIUtbQTnDIP" + "y" * 27}=
+PresharedKey = {PSK}
+AllowedIPs = 100.64.0.2/32
+
+[Peer]
+PublicKey = {"n117z/3AeWhuaMNN" + "z" * 27}=
+PresharedKey = {PSK}
+AllowedIPs = 100.64.0.3/32
+
+[Peer]
+# macbook-2 (key rotated 2026-10-27, was 1qtP0Bz2 without PSK)
+PublicKey = {"2Q41d93FiHUxxiUL" + "w" * 27}=
+PresharedKey = {PSK}
+AllowedIPs = 100.64.0.4/32
+
+[Peer]
+# macbook-3
+PublicKey = {"3MiTsQx5h+JxUnmm" + "v" * 27}=
+PresharedKey = {PSK}
+AllowedIPs = 100.64.0.5/32
+"""
+    cfg = _write_state(tmp_path, monkeypatch, conf)
+    render.render_all()  # must not raise
+    assert (cfg / "awg0.conf").exists()
+    db_peers = peers.load(str(cfg / "peers.db"))
+    assert all(peers.valid_name(p["name"]) for p in db_peers)
+    assert {p["ip"] for p in db_peers} == {
+        f"100.64.0.{i}" for i in range(1, 6)}
 
 
 # --- cmd-level tests with docker/compose/doctor mocked -----------------------
