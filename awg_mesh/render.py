@@ -52,14 +52,18 @@ def hub_ip(subnet):
     return str(net.network_address + 1)
 
 
-def obf_lines(env, indent=""):
-    keys = ["Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4",
+# AmneziaWG obfuscation parameter names, in render order. Shared with
+# adopt.py (conf key -> OBF_*) — single source of truth for the key set.
+OBF_KEYS = ["Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4",
             "H1", "H2", "H3", "H4", "HeaderProtectionKey",
             "ContentPaddingAddition", "RekeyAfterTime", "RekeyTimeout",
             "RejectAfterTime", "KeepaliveTimeout", "MaxHandshakeAttempts",
             "RandomTrailers", "DisableCookies"]
+
+
+def obf_lines(env, indent=""):
     out = []
-    for k in keys:
+    for k in OBF_KEYS:
         v = env.get(f"OBF_{k.upper()}")
         if v:
             out.append(f"{indent}{k} = {v}")

@@ -75,6 +75,58 @@ and `{"ok": false, "error": "..."}`.
 | `awg-mesh peer revoke <name>` | Remove device (config applied, profiles deleted) |
 | `awg-mesh doctor [--json]` | Docker, containers, listen port, ip_forward, MagicDNS, port publishing |
 | `awg-mesh monitoring install\|uninstall` | Cron stats (`/var/log/amnezia-mesh-stats.log`) + watchdog |
+| `awg-mesh adopt (--container C \| --config F --image IMG) --host H [--port P] [--dns1 D] [--dns2 D] [--rdp-reject]` | Migrate an existing AmneziaWG server under awg-mesh management (see below) |
+
+## Adopting an existing server
+
+You already run AmneziaWG (a container or a hand-made deployment) and want
+`awg-mesh` management — peer management, MagicDNS, doctor, monitoring —
+**without reissuing a single client profile**.
+
+```sh
+./bin/awg-mesh adopt --container amnezia-awg --host YOUR_IP --port 443
+# or, from a config file on the host:
+./bin/awg-mesh adopt --config /root/awg0.conf --image amneziavpn/amneziawg-go:latest \
+    --host YOUR_IP --port 443
+```
+
+What is carried over **verbatim** (so clients never notice):
+
+| | after adopt |
+|---|---|
+| server private key | same — clients see the same server |
+| obfuscation profile (Jc/Jmin/Jmax/S/H, HeaderProtectionKey, timers) | same — DPI fingerprint unchanged |
+| peer public keys, PSKs | same |
+| peer IPs | same — taken from each peer's `AllowedIPs` |
+| client profiles on devices | keep working, no reissue |
+
+What changes: the container is recreated under the `amnezia-mesh` compose
+project (renamed to `amnezia-mesh-awg`, dnsmasq becomes a sidecar) and the
+deployment is managed by `awg-mesh` from then on. Optional knobs that an
+`awg0.conf` cannot express are flags: `--dns1/--dns2` (upstream resolvers for
+MagicDNS forwarding, default 1.1.1.1), `--rdp-reject` (RDP UDP/3389 reject
+rule), `--domain` (default `awg`).
+
+Step by step, `adopt`:
+
+1. reads `awg0.conf` — from inside the container (`--container`, image is
+   detected automatically) or from a file (`--config`, `--image` required);
+2. parses `[Interface]` + `[Peer]` sections into `config/server.env` +
+   `config/peers.db` — refusing (with the offending key listed) rather than
+   dropping anything it doesn't understand;
+3. renders `awg0.conf` / `dnsmasq.conf` / `start.sh` and starts the stack;
+4. if `--container`: **stops** the old container (never removes it) and runs
+   `doctor`; on failure it rolls back automatically — restarts the old
+   container, nothing deleted.
+
+Safety rules:
+
+- the old container is only stopped and stays on the host as the rollback
+  plan: `docker stop amnezia-mesh-awg amnezia-mesh-dns && docker start <old>`
+- adopt aborts on unknown `[Interface]` keys, a server `Address` that is not
+  the subnet's first host, or peers without `PublicKey`/`PresharedKey`;
+- peer names come from `# name (added …)` comments; unnamed peers get a
+  generated `peer-xxxxxx` name, collisions get `-2` suffixes.
 
 ## Design: why AmneziaWG version updates don't matter
 
@@ -101,7 +153,7 @@ and `{"ok": false, "error": "..."}`.
 docker-compose.yml      awg container + dnsmasq sidecar (shared netns)
 bin/awg-mesh            CLI entrypoint (thin shim, runs from the checkout)
 awg_mesh/               python package: cli, envfile, peers, keygen, compose,
-                        render, profile, doctor (stdlib only)
+                        render, profile, doctor, adopt (stdlib only)
 scripts/                optional monitoring (stats, watchdog, cron)
 tests/                  pytest suite: render golden files, peers db + flock,
                         profile codec roundtrip

@@ -15,7 +15,7 @@ import sys
 from . import MeshError, __version__, root
 from . import compose as compose_mod
 from . import doctor as doctor_mod
-from . import keygen, peers, profile, render
+from . import adopt, keygen, peers, profile, render
 from .envfile import load as load_env
 
 JSON_MODE = False
@@ -164,6 +164,129 @@ def cmd_init(args):
        i_supported=(i_sup == "SUPPORTED"))
 
 
+def _utc_now():
+    return datetime.datetime.now(datetime.timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ")
+
+
+def cmd_adopt(args):
+    """Migrate an existing AmneziaWG server under awg-mesh management.
+
+    Carries over server key, obfuscation profile, peers (keys, PSKs, IPs)
+    verbatim — client profiles keep working, nothing is reissued. The old
+    container is only STOPPED (never removed) and is restarted automatically
+    if the post-adopt doctor fails.
+    """
+    r = root()
+    env_file = os.path.join(r, "config", "server.env")
+    if os.path.exists(env_file):
+        fail(f"already initialized: {env_file} exists (delete config/ to start over)")
+
+    if args.container:
+        say(f"reading config from container '{args.container}' ...")
+        cat = subprocess.run(["docker", "exec", args.container, "cat",
+                              "/opt/amnezia/awg/awg0.conf"],
+                             capture_output=True, text=True)
+        if cat.returncode != 0:
+            fail(f"cannot read awg0.conf from container '{args.container}': "
+                 f"{cat.stderr.strip()}")
+        insp = subprocess.run(["docker", "inspect", "-f", "{{.Config.Image}}",
+                               args.container], capture_output=True, text=True)
+        if insp.returncode != 0 or not insp.stdout.strip():
+            fail(f"cannot inspect container '{args.container}': "
+                 f"{insp.stderr.strip()}")
+        image = insp.stdout.strip()
+        conf_text = cat.stdout
+        source = f"container '{args.container}'"
+    else:
+        if not args.image:
+            fail("--image is required with --config")
+        say(f"reading config from {args.config} ...")
+        try:
+            with open(args.config) as f:
+                conf_text = f.read()
+        except OSError as e:
+            fail(f"cannot read {args.config}: {e}")
+        image = args.image
+        source = args.config
+
+    parsed = adopt.parse(conf_text)  # MeshError -> fail() in main()
+
+    n_obf = len([k for k in parsed.env if k.startswith("OBF_")])
+    say(f"[Interface]: server key, {n_obf} obfuscation parameters, "
+        f"MTU {parsed.env.get('MTU', '1280')}, "
+        f"ListenPort {parsed.env.get('LISTEN_PORT', '41480')}")
+    say(f"[Peer] x{len(parsed.peers)}:")
+    for p in parsed.peers:
+        say(f"  {p['name']:<20} {p['ip']}")
+    for w in parsed.warnings:
+        say(f"warning: {w}")
+
+    say("deriving server public key ...")
+    server_pub = keygen.pub_from_priv(image, parsed.env["SERVER_PRIV"])
+
+    env_pairs, peer_records = adopt.build_state(
+        parsed, host=args.host, port=args.port, domain=args.domain,
+        image=image, dns1=args.dns1, dns2=args.dns2,
+        rdp_reject=args.rdp_reject, server_pub=server_pub, now=_utc_now())
+
+    os.makedirs(os.path.join(r, "config", "peers"), exist_ok=True)
+    lines = [f"# amnezia-mesh server state. Adopted from {source}. "
+             "Local secrets — never commit."]
+    lines += [f"{k}={v}" for k, v in env_pairs]
+    with open(env_file, "w") as f:
+        f.write("\n".join(lines) + "\n")
+    os.chmod(env_file, 0o600)
+    with peers.locked(os.path.join(r, "config", "peers.db")) as tx:
+        for rec in peer_records:
+            tx.add(rec)
+    say(f"wrote config/server.env (0600) and config/peers.db "
+        f"({len(peer_records)} peers)")
+
+    say("rendering awg0.conf / dnsmasq.conf / start.sh ...")
+    render.render_all()
+
+    old = args.container
+    if old:
+        say(f"stopping '{old}' (kept stopped for rollback — do not remove) ...")
+        stop = subprocess.run(["docker", "stop", old], capture_output=True,
+                              text=True)
+        if stop.returncode != 0:
+            fail(f"old container refused to stop: {stop.stderr.strip()} "
+                 "(config written, nothing else changed — investigate manually)")
+    say("starting amnezia-mesh stack (awg + dns) ...")
+    up = compose_mod.compose(r, load_env(env_file), "up", "-d")
+    if up.returncode != 0:
+        if old:
+            subprocess.run(["docker", "start", old], capture_output=True)
+            fail(f"docker compose up failed: {up.stderr.strip()}; "
+                 f"'{old}' was started back, nothing deleted")
+        fail(f"docker compose up failed: {up.stderr.strip()}")
+
+    results = doctor_mod.run_checks(r)
+    bad = [c for c in results if not c["ok"]]
+    if bad:
+        if old:
+            compose_mod.compose(r, load_env(env_file), "down")
+            subprocess.run(["docker", "start", old], capture_output=True)
+        detail = "; ".join(f"{c['name']}: {c['detail']}" for c in bad)
+        if old:
+            fail(f"post-adopt checks failed: {detail} — rolled back, "
+                 f"'{old}' is running again, nothing deleted")
+        fail(f"post-adopt checks failed: {detail}")
+
+    out()
+    out(f"adopt complete: {len(peer_records)} peers carried over, "
+        "IPs and keys unchanged")
+    out("client profiles keep working — no reissue needed")
+    if old:
+        out("rollback anytime: docker stop amnezia-mesh-awg "
+            f"amnezia-mesh-dns && docker start {old}")
+    out("next: check a client reconnects, then ./bin/awg-mesh peer list")
+    ok(adopted_from=args.container or args.config,
+       peers=len(peer_records), subnet=parsed.subnet)
+
+
 def cmd_peer_add(args):
     r = root()
     env_file = os.path.join(r, "config", "server.env")
@@ -307,6 +430,23 @@ def build_parser():
     i.add_argument("--domain", default="awg")
     i.add_argument("--rdp-reject", action="store_true")
     i.set_defaults(fn=cmd_init)
+
+    ad = sub.add_parser("adopt", help="migrate an existing AmneziaWG server "
+                                      "under awg-mesh management")
+    src = ad.add_mutually_exclusive_group(required=True)
+    src.add_argument("--container",
+                     help="running container with awg0.conf inside "
+                          "(/opt/amnezia/awg/awg0.conf); image is read "
+                          "from the container")
+    src.add_argument("--config", help="path to awg0.conf on this host")
+    ad.add_argument("--image", help="AWG image (required with --config)")
+    ad.add_argument("--host", required=True, help="public IP or domain")
+    ad.add_argument("--port", default="443")
+    ad.add_argument("--domain", default="awg")
+    ad.add_argument("--dns1", default="1.1.1.1")
+    ad.add_argument("--dns2", default="")
+    ad.add_argument("--rdp-reject", action="store_true")
+    ad.set_defaults(fn=cmd_adopt)
 
     pr = sub.add_parser("peer", help="manage devices")
     pr_sub = pr.add_subparsers(dest="peer_cmd", required=True)

@@ -56,6 +56,15 @@ def gen_psk(image):
     return psk.stdout.strip()
 
 
+def pub_from_priv(image, priv):
+    """Derive a public key from an existing private key (used by adopt)."""
+    pub = _docker("run", "--rm", "--network", "none", "--entrypoint", "awg",
+                  "-i", image, "pubkey", input_text=priv.strip())
+    if pub.returncode != 0:
+        raise MeshError(f"awg pubkey failed (image: {image}): {pub.stderr.strip()}")
+    return pub.stdout.strip()
+
+
 def probe_i_support(image):
     """-> SUPPORTED | UNSUPPORTED | NO_AWGQUICK."""
     r = _docker("run", "--rm", "--network", "none",
