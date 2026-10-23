@@ -1,4 +1,6 @@
-[English](README.md) | **Русский** | [中文](README.zh-CN.md) | [Español](README.es.md)
+[English](README.md) | **Русский** | [中文](README.zh-CN.md) | [Español](README.es.md) | [فارسی](README.fa.md) | [العربية](README.ar.md) | [Português](README.pt-BR.md) | [日本語](README.ja.md) | [Deutsch](README.de.md)
+
+_Перевод английского README — может отставать от оригинала._
 
 # amnezia-mesh
 
