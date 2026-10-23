@@ -51,6 +51,17 @@ class Tx:
         self.dirty = self.dirty or len(self.peers) != before
         return len(self.peers) != before
 
+    def rename(self, old, new):
+        """Rename a peer. Returns False if old is missing or new is taken."""
+        if self.find(new) is not None:
+            return False
+        peer = self.find(old)
+        if peer is None:
+            return False
+        peer["name"] = new
+        self.dirty = True
+        return True
+
     def find(self, name):
         for p in self.peers:
             if p["name"] == name:

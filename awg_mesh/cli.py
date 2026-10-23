@@ -347,6 +347,26 @@ def cmd_peer_list(args):
               for p in plist])
 
 
+def cmd_peer_rename(args):
+    r = root()
+    env_file = os.path.join(r, "config", "server.env")
+    if not os.path.exists(env_file):
+        fail("not initialized (run: awg-mesh init)")
+    old, new = args.name, args.new_name
+    if not peers.valid_name(new):
+        fail(f"invalid peer name: {new} (lowercase letters, digits, dash, max 32)")
+    env = load_env(env_file)
+    with peers.locked(os.path.join(r, "config", "peers.db")) as tx:
+        if not tx.find(old):
+            fail(f"no such peer: {old}")
+        if not tx.rename(old, new):
+            fail(f"peer already exists: {new}")
+    render.render_all()
+    apply_conf(env)
+    say(f"peer '{old}' renamed to '{new}'")
+    ok(renamed=old, name=new)
+
+
 def cmd_peer_revoke(args):
     r = root()
     env_file = os.path.join(r, "config", "server.env")
@@ -462,6 +482,11 @@ def build_parser():
                                           "profiles deleted)")
     pv.add_argument("name")
     pv.set_defaults(fn=cmd_peer_revoke)
+    pn = pr_sub.add_parser("rename", help="rename a device (MagicDNS name "
+                                          "follows)")
+    pn.add_argument("name")
+    pn.add_argument("new_name")
+    pn.set_defaults(fn=cmd_peer_rename)
 
     d = sub.add_parser("doctor", help="post-install self-checks")
     d.set_defaults(fn=cmd_doctor)

@@ -52,6 +52,21 @@ def test_db_is_created_on_first_write(tmp_path):
     assert len(peers.load(db)) == 1
 
 
+def test_rename_peer(tmp_path):
+    db = str(tmp_path / "peers.db")
+    with peers.locked(db) as tx:
+        tx.add(_peer("a", "100.64.0.2"))
+        tx.add(_peer("b", "100.64.0.3"))
+    with peers.locked(db) as tx:
+        assert tx.rename("a", "phone") is True
+        assert tx.rename("a", "x") is False      # old name gone
+        assert tx.rename("phone", "b") is False  # target taken
+        assert tx.rename("nope", "x") is False   # missing
+    loaded = peers.load(db)
+    assert [p["name"] for p in loaded] == ["phone", "b"]
+    assert loaded[0]["ip"] == "100.64.0.2"  # keys/IPs untouched
+
+
 def test_parse_rejects_invalid_name():
     with pytest.raises(ValueError):
         peers.parse("Bad\t100.64.0.2\tp\tk\tt\n")
