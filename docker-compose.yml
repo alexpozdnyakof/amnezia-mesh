@@ -16,10 +16,15 @@ services:
       - /lib/modules:/lib/modules
       - ./config/awg0.conf:/opt/amnezia/awg/awg0.conf:ro
       - ./config/start.sh:/opt/amnezia/start.sh:ro
+      - ./config/isolation.sh:/opt/amnezia/isolation.sh:ro
     # Pinned entrypoint: the upstream image's own entrypoint is replaced by
     # our generated start.sh, so any upstream image update cannot wipe our
     # iptables/dnsmasq bootstrap (they live on the host, not in the image).
-    entrypoint: ["/bin/sh", "/opt/amnezia/start.sh"]
+    # The wrapper first applies the optional per-peer isolation rules
+    # (config/isolation.sh, host-managed, not generated; applied when present)
+    # so they land in this container's netns on every start — including
+    # restarts done by `awg-mesh peer` operations.
+    entrypoint: ["/bin/sh", "-c", "[ -f /opt/amnezia/isolation.sh ] && sh /opt/amnezia/isolation.sh; exec /bin/sh /opt/amnezia/start.sh"]
     ports:
       - "${AWG_MESH_PORT}:41480/udp"
     restart: unless-stopped
@@ -29,6 +34,10 @@ services:
     container_name: amnezia-mesh-dns
     # Shares the awg container network namespace: sees awg0 and binds
     # the hub IP :53. Kept as a sidecar so the AWG image stays pristine.
+    # NOTE: when the awg container is (re)started, this sidecar must be
+    # restarted too — it does not follow awg into the new netns by itself.
+    # `awg-mesh peer` operations already do both restarts; do it manually
+    # if you restart awg by hand.
     network_mode: service:awg
     depends_on:
       - awg
