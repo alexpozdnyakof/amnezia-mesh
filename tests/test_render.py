@@ -24,7 +24,7 @@ def test_render_matches_legacy_render_py_byte_for_byte(tmp_path, monkeypatch):
     reproduce them exactly."""
     cfg = _setup(tmp_path, monkeypatch)
     render.render_all()
-    for name in ("awg0.conf", "dnsmasq.conf", "start.sh"):
+    for name in ("awg0.conf", "dnsmasq.conf", "peers.hosts", "start.sh"):
         produced = (cfg / name).read_bytes()
         expected = open(os.path.join(GOLDEN, name), "rb").read()
         assert produced == expected, f"{name} diverged from legacy render.py"

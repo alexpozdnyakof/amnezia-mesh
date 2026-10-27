@@ -62,7 +62,7 @@ def test_roundtrip_adopt_render_matches_golden_byte_for_byte(tmp_path,
     server.env + peers.db -> render must reproduce golden exactly."""
     cfg = _write_state(tmp_path, monkeypatch)
     render.render_all()
-    for name in ("awg0.conf", "dnsmasq.conf", "start.sh"):
+    for name in ("awg0.conf", "dnsmasq.conf", "peers.hosts", "start.sh"):
         produced = (cfg / name).read_bytes()
         expected = open(os.path.join(GOLDEN, name), "rb").read()
         assert produced == expected, f"{name} diverged after adopt roundtrip"

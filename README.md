@@ -72,10 +72,10 @@ and `{"ok": false, "error": "..."}`.
 | Command | Description |
 |---|---|
 | `awg-mesh init [--host H] [--port P] [--subnet CIDR] [--image IMG] [--domain D] [--rdp-reject]` | Generate keys + random obfuscation, render configs, start containers |
-| `awg-mesh peer add <name> [--type exit\|mesh\|both]` | New device: keys, IP, profiles (applied via `awg syncconf`, then the awg container is restarted — syncconf alone can silently wedge fresh handshakes in the userspace daemon) |
+| `awg-mesh peer add <name> [--type exit\|mesh\|both]` | New device: keys, IP, profiles (live `awg set` + dnsmasq SIGHUP — no restart; existing peers keep their sessions) |
 | `awg-mesh peer list` | Devices, IPs, creation dates |
-| `awg-mesh peer rename <name> <new-name>` | Rename a device (its `<name>.<domain>` MagicDNS record follows) |
-| `awg-mesh peer revoke <name>` | Remove device (config applied, profiles deleted) |
+| `awg-mesh peer rename <name> <new-name>` | Rename a device (its `<name>.<domain>` MagicDNS record follows; dnsmasq SIGHUP only — no restart) |
+| `awg-mesh peer revoke <name>` | Remove device (awg + dns containers restarted — removing peers from the userspace daemon via UAPI can silently wedge fresh handshakes; profiles deleted) |
 | `awg-mesh doctor [--json]` | Docker, containers, listen port, ip_forward, MagicDNS, port publishing |
 | `awg-mesh monitoring install\|uninstall` | Cron stats (`/var/log/amnezia-mesh-stats.log`) + watchdog |
 | `awg-mesh adopt (--container C \| --config F --image IMG) --host H [--port P] [--dns1 D] [--dns2 D] [--rdp-reject]` | Migrate an existing AmneziaWG server under awg-mesh management (see below) |

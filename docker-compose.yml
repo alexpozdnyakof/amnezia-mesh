@@ -43,5 +43,9 @@ services:
       - awg
     volumes:
       - ./config/dnsmasq.conf:/etc/dnsmasq.conf:ro
+      # MagicDNS host records, re-read by dnsmasq on SIGHUP — mounted
+      # separately so peer add/rename reload it without restarting this
+      # sidecar.
+      - ./config/peers.hosts:/etc/peers.hosts:ro
     command: ["/bin/sh", "-c", "apk add --no-cache dnsmasq >/dev/null 2>&1 && exec dnsmasq -k -C /etc/dnsmasq.conf"]
     restart: unless-stopped

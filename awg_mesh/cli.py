@@ -56,39 +56,40 @@ def confirm(question):
     return ans.strip().lower() in ("y", "yes")
 
 
-def strip_interface_block(text):
-    """Remove the [Interface] section from an awg-quick config. syncconf only
-    understands [Peer] sections ([Interface] keys like Address are wg-quick-
-    isms and rejected), so we strip the block before piping the config in."""
-    lines, skipping = [], False
-    for line in text.splitlines():
-        if line.strip() == "[Interface]":
-            skipping = True
-            continue
-        if skipping and line.startswith("["):
-            skipping = False
-        if not skipping:
-            lines.append(line)
-    return "\n".join(lines)
-
-
-def apply_conf(env):
-    """Push awg0.conf into the running container and reload dns."""
+def apply_add(env, peer):
+    """Apply a NEW peer to the running containers without any restart:
+    `awg set` adds the peer to the live daemon (nothing is removed, so the
+    userspace syncconf wedge cannot occur), and SIGHUP makes dnsmasq re-read
+    peers.hosts for the new MagicDNS record."""
     r = root()
-    with open(os.path.join(r, "config", "awg0.conf")) as f:
-        peers_only = strip_interface_block(f.read())
-    sync = compose_mod.compose(r, env, "exec", "-T", "awg", "awg", "syncconf",
-                               "awg0", "/dev/stdin", input_text=peers_only + "\n")
-    if sync.returncode == 0:
-        say("applied via awg syncconf")
-    else:
-        say(f"syncconf failed ({sync.stderr.strip()})")
-    # Production lesson: the userspace daemon can silently wedge fresh
-    # handshakes after peers are stripped/re-added via syncconf (the iphone
-    # incident). Restart unconditionally — syncconf alone gives false success.
+    compose_mod.compose(r, env, "exec", "-T", "awg", "awg", "set", "awg0",
+                        "peer", peer["pub"], "allowed-ips",
+                        f"{peer['ip']}/32")
+    say("applied via awg set")
+    reload_dns(env)
+    say("dns records reloaded")
+
+
+def apply_rename(env):
+    """Rename touches only MagicDNS (keys/IPs are unchanged): SIGHUP dnsmasq."""
+    reload_dns(env)
+    say("dns records reloaded")
+
+
+def apply_revoke(env):
+    """Apply a peer REVOKE. Removing peers from the userspace daemon is the
+    operation that can silently wedge fresh handshakes (the iphone incident),
+    and no UAPI variant is trusted there — restart awg so it re-reads
+    awg0.conf in a fresh process. start.sh re-applies iptables; the dns
+    sidecar is restarted too (it must follow awg into the new netns)."""
+    r = root()
     compose_mod.compose(r, env, "restart", "awg")
-    # dnsmasq ignores SIGHUP for config changes — restart the sidecar too.
     compose_mod.compose(r, env, "restart", "dns")
+
+
+def reload_dns(env):
+    """SIGHUP dnsmasq (PID 1 in the sidecar) — re-reads the addn-hosts file."""
+    compose_mod.compose(root(), env, "exec", "-T", "dns", "kill", "-HUP", "1")
 
 
 def cmd_init(args):
@@ -350,7 +351,7 @@ def cmd_peer_add(args):
                 "created": created})
 
     render.render_all()
-    apply_conf(env)
+    apply_add(env, {"pub": pub, "ip": ip})
 
     prefix = os.path.join(r, "config", "peers", name)
     profile.generate_profiles(env_file=env_file, name=name, ip=ip,
@@ -396,7 +397,7 @@ def cmd_peer_rename(args):
         if not tx.rename(old, new):
             fail(f"peer already exists: {new}")
     render.render_all()
-    apply_conf(env)
+    apply_rename(env)
     say(f"peer '{old}' renamed to '{new}'")
     ok(renamed=old, name=new)
 
@@ -415,7 +416,7 @@ def cmd_peer_revoke(args):
             fail("aborted")
         tx.remove(name)
     render.render_all()
-    apply_conf(env)
+    apply_revoke(env)
     for path in (glob.glob(os.path.join(r, "config", "peers", f"{name}-*.vpn"))
                  + glob.glob(os.path.join(r, "config", "peers", f"{name}-*.conf"))):
         os.unlink(path)
