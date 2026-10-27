@@ -15,6 +15,7 @@ import sys
 from . import MeshError, __version__, root
 from . import compose as compose_mod
 from . import doctor as doctor_mod
+from . import skill
 from . import adopt, keygen, peers, profile, render
 from .envfile import load as load_env
 
@@ -467,6 +468,17 @@ def cmd_monitoring(args):
         ok(installed=False)
 
 
+def cmd_skill(args):
+    """Print the bundled agent skill, or install it into ~/.agents/skills/."""
+    if args.install:
+        path = skill.install()
+        say(f"skill installed: {path}")
+        ok(skill=path)
+    else:
+        sys.stdout.write(skill.load())
+    return 0
+
+
 def build_parser():
     p = argparse.ArgumentParser(
         prog="awg-mesh",
@@ -533,6 +545,13 @@ def build_parser():
     m = sub.add_parser("monitoring", help="cron stats + watchdog")
     m.add_argument("action", choices=["install", "uninstall"])
     m.set_defaults(fn=cmd_monitoring)
+
+    sk = sub.add_parser("skill", help="print the bundled agent skill "
+                                      "(SKILL.md); --install copies it to "
+                                      "~/.agents/skills/ so coding agents "
+                                      "pick it up")
+    sk.add_argument("--install", action="store_true")
+    sk.set_defaults(fn=cmd_skill)
     return p
 
 
