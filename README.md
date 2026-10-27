@@ -37,6 +37,27 @@ no third-party relays.
 - UDP port open in the VPS firewall (443/udp recommended — it blends into
   QUIC-looking traffic and is the hardest for ISPs to shape).
 
+## Setup with an AI agent (Claude Code, Kimi Code, Cursor, …)
+
+The CLI ships its own operator skill — a compact runbook covering install,
+the automation protocol, restart semantics and a troubleshooting decision
+tree. Hand it to your agent and the whole flow becomes conversational:
+
+```sh
+# on the machine the agent works on (macOS; Linux: see Releases)
+brew tap alexpozdnyakof/tap
+brew install --cask alexpozdnyakof/tap/awg-mesh   # or: git clone this repo
+
+awg-mesh skill --install   # ~/.agents/skills/awg-mesh/SKILL.md
+```
+
+Then just ask, e.g. *"set up my VPN on this VPS (IP 203.0.113.7), add my
+laptop and phone, then run the self-checks"*. The agent runs
+`awg-mesh init` / `peer add` / `doctor --json`, imports the generated
+profiles on your devices, and diagnoses connectivity with the skill's
+decision tree. `AGENTS.md` at the repo root does the same orientation for
+agents working inside a checkout.
+
 ## Quickstart (human)
 
 ```sh
