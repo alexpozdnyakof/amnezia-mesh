@@ -44,10 +44,12 @@ the automation protocol, restart semantics and a troubleshooting decision
 tree. Hand it to your agent and the whole flow becomes conversational:
 
 ```sh
-# on the machine the agent works on (macOS; Linux: see Releases)
+# macOS cask: awg-mesh (CLI) and awg-mesh-tui. Linux: see Releases.
 brew tap alexpozdnyakof/tap
-brew install --cask alexpozdnyakof/tap/awg-mesh   # or: git clone this repo
+brew install --cask alexpozdnyakof/tap/awg-mesh
+# or: git clone this repo
 
+awg-mesh-tui install --ssh root@YOUR_VPS --json
 awg-mesh skill --install   # ~/.agents/skills/awg-mesh/SKILL.md
 ```
 

@@ -16,17 +16,37 @@ this CLI. Nothing else — no coordination server, no accounts, no relays.
 
 ## Install the CLI
 
+macOS — one Homebrew cask installs the CLI and the install panel:
+
 ```sh
-# Go build (darwin/linux, amd64/arm64) — preferred
 brew tap alexpozdnyakof/tap
 brew install --cask alexpozdnyakof/tap/awg-mesh
+```
 
-# or the Python version (stdlib only, needs python3 >= 3.8):
+- `awg-mesh` — CLI. Agents use this (`--json`, `awg-mesh skill --install`).
+- `awg-mesh-tui` — install panel. It asks for an SSH target and copies the Linux CLI onto the VPS. The cask carries `linux/amd64` and `linux/arm64` payloads, and the copy goes over SSH.
+
+```sh
+awg-mesh-tui install --ssh root@YOUR_VPS --json
+awg-mesh-tui install
+```
+
+`--json` is the agent path and does not prompt. Without it, a form asks for the SSH target. SSH is the system client: aliases and keys come from `~/.ssh/config`, or pass `--identity` for a key file. Install copies the binary to `~/.local/bin/awg-mesh` on the server and records that path in the panel config. Create the network afterwards, on the server:
+
+```sh
+ssh root@YOUR_VPS ~/.local/bin/awg-mesh init --host YOUR_IP_OR_DOMAIN --port 443
+```
+
+Linux builds are the GitHub release tarballs. Python fallback (stdlib only, python3 >= 3.8):
+
+```sh
 git clone https://github.com/alexpozdnyakof/amnezia-mesh && cd amnezia-mesh
 ./bin/awg-mesh --version
 ```
 
 ## First deploy (one VPS, ~10 minutes)
+
+On the server (the `remote_path` from `awg-mesh-tui install`, or an SSH session):
 
 ```sh
 awg-mesh init --host YOUR_IP_OR_DOMAIN --port 443
@@ -116,3 +136,5 @@ then reach each other by IP (`100.64.0.x`) or name (`phone.awg`). Open UDP
   the hub for everyone. Confirm with the user first.
 - Prefer `doctor --json` before and after any change; it's the project's
   own definition of "healthy".
+- `awg-mesh-tui install --ssh <target>` copies the CLI onto that host.
+  Use only a target the user named. It copies the binary; `init` is separate.
