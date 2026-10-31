@@ -59,6 +59,24 @@ On each device: Amnezia app → import the `vpn://` link → connect. Devices
 then reach each other by IP (`100.64.0.x`) or name (`phone.awg`). Open UDP
 `--port` in the VPS firewall (443/udp blends into QUIC-like traffic).
 
+## Remote mode (ssh)
+
+Manage the server copy of this CLI from this machine — nothing is
+re-implemented locally:
+
+```sh
+awg-mesh --server my-vps peer list --json
+# or: export AWG_MESH_SSH=my-vps
+```
+
+The local CLI runs `ssh my-vps 'cd ~ && awg-mesh <args>'` with the system ssh
+client (aliases and keys come from `~/.ssh/config`) and passes
+stdout/stderr/exit codes through. After a mutating command (`init`, `adopt`,
+`peer add|rename|revoke`) the remote `config/peers/` is mirrored back with
+scp, so the `.vpn` profiles land next to the local checkout. Set
+`AWG_MESH_REMOTE_ROOT` when the mesh root on the server is not the home
+directory. `skill` and `--version` always run locally.
+
 ## Automation protocol (script against this)
 
 - Every command accepts `--json`: one JSON object on stdout, non-zero exit
@@ -138,3 +156,5 @@ then reach each other by IP (`100.64.0.x`) or name (`phone.awg`). Open UDP
   own definition of "healthy".
 - `awg-mesh-tui install --ssh <target>` copies the CLI onto that host.
   Use only a target the user named. It copies the binary; `init` is separate.
+- `awg-mesh --server <alias>` (or `AWG_MESH_SSH`) executes the command on
+  that host, not here. Use only a target the user named.
