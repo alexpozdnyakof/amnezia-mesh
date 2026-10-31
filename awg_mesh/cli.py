@@ -3,6 +3,8 @@
 Same surface as the original bash CLI: init / peer add|list|revoke / doctor /
 monitoring, a global --json accepted anywhere on the command line, env
 overrides AWG_MESH_*, and non-interactive mode via AWG_MESH_NONINTERACTIVE=1.
+Remote mode (--server / AWG_MESH_SSH) proxies everything except skill and
+--version over ssh to a server copy of the CLI (see proxy.py).
 """
 import argparse
 import datetime
@@ -15,7 +17,7 @@ import sys
 from . import MeshError, __version__, root
 from . import compose as compose_mod
 from . import doctor as doctor_mod
-from . import skill
+from . import proxy, skill
 from . import adopt, keygen, peers, profile, render
 from .envfile import load as load_env
 
@@ -562,6 +564,12 @@ def main(argv=None):
     if "--json" in argv:
         JSON_MODE = True
         argv.remove("--json")
+    try:
+        alias, argv = proxy.resolve(argv, os.environ)
+        if alias and not proxy.local_only(argv):
+            return proxy.run(alias, argv, json_mode=JSON_MODE)
+    except MeshError as e:
+        fail(e)
     args = build_parser().parse_args(argv)
     try:
         return args.fn(args) or 0

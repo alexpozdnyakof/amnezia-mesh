@@ -10,7 +10,9 @@ contract).
 
 Run from the repo root: `.venv/bin/python -m awg_mesh ...` (or
 `./bin/awg-mesh`). Everything scriptable: `--json`, `AWG_MESH_NONINTERACTIVE=1`,
-`AWG_MESH_ROOT=/path`. Human/AI operator guide lives in
+`AWG_MESH_ROOT=/path`, remote mode via `--server`/`AWG_MESH_SSH` (thin ssh
+proxy; mutating commands mirror `config/peers/` back with scp). Human/AI
+operator guide lives in
 `skills/awg-mesh/SKILL.md` — the same file `awg-mesh skill` prints and
 `awg-mesh skill --install` copies to `~/.agents/skills/`.
 
