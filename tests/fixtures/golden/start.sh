@@ -3,7 +3,18 @@
 echo "amnezia-mesh: starting"
 sysctl -w net.ipv4.ip_forward=1 2>/dev/null || true
 awg-quick down /opt/amnezia/awg/awg0.conf 2>/dev/null
-awg-quick up /opt/amnezia/awg/awg0.conf || { echo "amnezia-mesh: awg-quick failed"; exit 1; }
+if awg-quick up /opt/amnezia/awg/awg0.conf; then
+  echo "amnezia-mesh: backend up"
+else
+  # VPS without the kernel module (or a tools/module generation mismatch):
+  # force the userspace implementation shipped in the image. Same config,
+  # same obfuscation — ~30-50% CPU overhead is the price.
+  echo "amnezia-mesh: kernel backend failed, falling back to userspace amneziawg-go"
+  awg-quick down /opt/amnezia/awg/awg0.conf 2>/dev/null
+  if ! WG_QUICK_USERSPACE_IMPLEMENTATION=amneziawg-go awg-quick up /opt/amnezia/awg/awg0.conf; then
+    echo "amnezia-mesh: awg-quick failed"; exit 1
+  fi
+fi
 
 SUBNET=100.64.0.0/24
 IFACE=$(ip route show default 2>/dev/null | awk 'NR==1 {print $5}')

@@ -17,7 +17,7 @@ import sys
 
 from . import MeshError, root
 
-_PEER_MUTATIONS = ("add", "rename", "revoke")
+_PEER_MUTATIONS = ("add", "rename", "revoke", "rotate")
 
 
 def resolve(argv, env):

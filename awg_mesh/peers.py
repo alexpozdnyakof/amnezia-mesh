@@ -62,6 +62,16 @@ class Tx:
         self.dirty = True
         return True
 
+    def rotate_keys(self, name, pub, psk):
+        """Re-issue a peer's key material (name/IP/created stay)."""
+        peer = self.find(name)
+        if peer is None:
+            return None
+        peer["pub"] = pub
+        peer["psk"] = psk
+        self.dirty = True
+        return peer
+
     def find(self, name):
         for p in self.peers:
             if p["name"] == name:

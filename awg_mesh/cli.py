@@ -9,6 +9,7 @@ Remote mode (--server / AWG_MESH_SSH) proxies everything except skill and
 import argparse
 import datetime
 import glob
+import ipaddress
 import json
 import os
 import subprocess
@@ -390,19 +391,179 @@ def cmd_peer_rename(args):
     env_file = os.path.join(r, "config", "server.env")
     if not os.path.exists(env_file):
         fail("not initialized (run: awg-mesh init)")
-    old, new = args.name, args.new_name
-    if not peers.valid_name(new):
-        fail(f"invalid peer name: {new} (lowercase letters, digits, dash, max 32)")
+    if len(args.pairs) % 2 != 0:
+        fail("peer rename takes <old> <new> pairs")
+    ops = [(args.pairs[i], args.pairs[i + 1])
+           for i in range(0, len(args.pairs), 2)]
     env = load_env(env_file)
     with peers.locked(os.path.join(r, "config", "peers.db")) as tx:
-        if not tx.find(old):
-            fail(f"no such peer: {old}")
-        if not tx.rename(old, new):
-            fail(f"peer already exists: {new}")
+        existing = {p["name"] for p in tx.peers}
+        olds = {old for old, _ in ops}
+        # Validate everything before touching anything — a failed bulk
+        # rename must leave the db untouched. A new name may reuse any old
+        # name in this call (swaps included), since all olds go away.
+        seen_old, seen_new = set(), set()
+        for old, new in ops:
+            if old in seen_old:
+                fail(f"peer renamed twice in one call: {old}")
+            seen_old.add(old)
+            if tx.find(old) is None:
+                fail(f"no such peer: {old}")
+            if not peers.valid_name(new):
+                fail(f"invalid peer name: {new} (lowercase letters, "
+                     "digits, dash, max 32)")
+            if new in seen_new:
+                fail(f"duplicate new name: {new}")
+            seen_new.add(new)
+            if new in existing and new not in olds:
+                fail(f"peer already exists: {new}")
+        mapping = dict(ops)
+        for p in tx.peers:
+            if p["name"] in mapping:
+                p["name"] = mapping[p["name"]]
+        tx.dirty = True
     render.render_all()
     apply_rename(env)
-    say(f"peer '{old}' renamed to '{new}'")
-    ok(renamed=old, name=new)
+    for old, new in ops:
+        say(f"peer '{old}' renamed to '{new}'")
+    if len(ops) == 1:
+        ok(renamed=ops[0][0], name=ops[0][1])
+    else:
+        ok(renamed={old: new for old, new in ops})
+
+
+def cmd_peer_rotate(args):
+    """Re-issue a device's key material: new keypair + PSK, same name and IP.
+
+    The old pubkey must leave the running daemon, and removing peers from
+    the userspace daemon is the operation that can silently wedge fresh
+    handshakes — so rotation restarts the hub exactly like revoke does.
+    The device must re-import its profile; the old vpn:// link dies.
+    """
+    r = root()
+    env_file = os.path.join(r, "config", "server.env")
+    if not os.path.exists(env_file):
+        fail("not initialized (run: awg-mesh init)")
+    name = args.name
+    env = load_env(env_file)
+    with peers.locked(os.path.join(r, "config", "peers.db")) as tx:
+        if tx.find(name) is None:
+            fail(f"no such peer: {name}")
+        if not confirm(f"rotate keys for '{name}'? the device must re-import "
+                       "its profile; the hub restarts"):
+            fail("aborted")
+        say(f"generating new keys for {name} ...")
+        priv, pub = keygen.gen_keypair(env["AWG_MESH_IMAGE"])
+        psk = keygen.gen_psk(env["AWG_MESH_IMAGE"])
+        peer = tx.rotate_keys(name, pub, psk)
+        ip = peer["ip"]
+    render.render_all()
+    apply_revoke(env)
+    prefix = os.path.join(r, "config", "peers", name)
+    profile.generate_profiles(env_file=env_file, name=name, ip=ip,
+                              priv=priv, pub=pub, psk=psk, out_prefix=prefix)
+    out()
+    out(f"peer '{name}' rotated: {ip} (new keypair + psk)")
+    out("import the new profile on the device — the old vpn:// link "
+        "stops working")
+    ok(rotated=name, ip=ip,
+       profiles=[f"{prefix}-exit.vpn", f"{prefix}-mesh.vpn"])
+
+
+# --- custom MagicDNS records (config/custom.hosts) -----------------------------
+
+def _custom_hosts_path(r):
+    return os.path.join(r, "config", "custom.hosts")
+
+
+def _load_custom_records(r):
+    """[(fqdn, ip)] from config/custom.hosts; comments/blanks skipped."""
+    path = _custom_hosts_path(r)
+    records = []
+    if not os.path.exists(path):
+        return records
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split()
+            if len(parts) >= 2:
+                records.append((parts[1], parts[0]))
+    return records
+
+
+def _save_custom_records(r, records):
+    text = render.CUSTOM_HOSTS_HEADER
+    for fqdn, ip in sorted(records):
+        text += f"{ip}\t{fqdn}\n"
+    with open(_custom_hosts_path(r), "w") as f:
+        f.write(text)
+
+
+def cmd_dns_add(args):
+    r = root()
+    env_file = os.path.join(r, "config", "server.env")
+    if not os.path.exists(env_file):
+        fail("not initialized (run: awg-mesh init)")
+    name = args.name
+    if "." in name or not peers.valid_name(name):
+        fail(f"invalid record name: {name} (lowercase letters, digits, dash, "
+             "max 32, no dots)")
+    try:
+        ip = str(ipaddress.ip_address(args.ip))
+    except ValueError:
+        fail(f"invalid IP: {args.ip}")
+    if ipaddress.ip_address(ip).version != 4:
+        fail(f"invalid IP: {args.ip} (IPv4 only)")
+    env = load_env(env_file)
+    domain = env.get("AWG_MESH_DOMAIN", "awg")
+    fqdn = f"{name}.{domain}"
+    records = _load_custom_records(r)
+    if fqdn in {n for n, _ in records}:
+        fail(f"record already exists: {fqdn} (remove it first)")
+    taken = {p["name"] for p in peers.load(os.path.join(r, "config", "peers.db"))}
+    taken.add("hub")
+    if name in taken:
+        fail(f"'{name}' is already served by MagicDNS (peer or hub name)")
+    records.append((fqdn, ip))
+    _save_custom_records(r, records)
+    reload_dns(env)
+    say("dns records reloaded")
+    say(f"added DNS record {fqdn} -> {ip}")
+    ok(name=fqdn, ip=ip)
+
+
+def cmd_dns_remove(args):
+    r = root()
+    env_file = os.path.join(r, "config", "server.env")
+    if not os.path.exists(env_file):
+        fail("not initialized (run: awg-mesh init)")
+    env = load_env(env_file)
+    domain = env.get("AWG_MESH_DOMAIN", "awg")
+    name = args.name if "." in args.name else f"{args.name}.{domain}"
+    records = _load_custom_records(r)
+    if name not in {n for n, _ in records}:
+        fail(f"no such record: {name}")
+    records = [(n, ip) for n, ip in records if n != name]
+    _save_custom_records(r, records)
+    reload_dns(env)
+    say("dns records reloaded")
+    say(f"removed DNS record {name}")
+    ok(removed=name)
+
+
+def cmd_dns_list(args):
+    r = root()
+    env_file = os.path.join(r, "config", "server.env")
+    if not os.path.exists(env_file):
+        fail("not initialized (run: awg-mesh init)")
+    records = _load_custom_records(r)
+    if not JSON_MODE and not records:
+        out("no custom records")
+    for fqdn, ip in records:
+        out(f"{fqdn:<40} {ip}")
+    ok(records=[{"name": n, "ip": ip} for n, ip in records])
 
 
 def cmd_peer_revoke(args):
@@ -535,14 +696,33 @@ def build_parser():
                                           "profiles deleted)")
     pv.add_argument("name")
     pv.set_defaults(fn=cmd_peer_revoke)
-    pn = pr_sub.add_parser("rename", help="rename a device (MagicDNS name "
-                                          "follows)")
-    pn.add_argument("name")
-    pn.add_argument("new_name")
+    pn = pr_sub.add_parser("rename", help="rename device(s): one old/new "
+                                           "pair, or several at once "
+                                           "(MagicDNS names follow)")
+    pn.add_argument("pairs", nargs="+", metavar="name")
     pn.set_defaults(fn=cmd_peer_rename)
+    prot = pr_sub.add_parser("rotate", help="re-issue a device's keys "
+                                            "(same IP; device re-imports its "
+                                            "profile; hub restarts)")
+    prot.add_argument("name")
+    prot.set_defaults(fn=cmd_peer_rotate)
 
     d = sub.add_parser("doctor", help="post-install self-checks")
     d.set_defaults(fn=cmd_doctor)
+
+    dn = sub.add_parser("dns", help="custom MagicDNS records on top of "
+                                    "<name>.<domain>")
+    dn_sub = dn.add_subparsers(dest="dns_cmd", required=True)
+    da = dn_sub.add_parser("add", help="map <name>.<domain> to an IPv4 "
+                                       "address")
+    da.add_argument("name")
+    da.add_argument("ip")
+    da.set_defaults(fn=cmd_dns_add)
+    drr = dn_sub.add_parser("remove", help="drop a custom record")
+    drr.add_argument("name")
+    drr.set_defaults(fn=cmd_dns_remove)
+    dl = dn_sub.add_parser("list", help="custom records")
+    dl.set_defaults(fn=cmd_dns_list)
 
     m = sub.add_parser("monitoring", help="cron stats + watchdog")
     m.add_argument("action", choices=["install", "uninstall"])

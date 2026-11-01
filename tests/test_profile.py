@@ -1,4 +1,5 @@
 import json
+import random
 import os
 
 from awg_mesh import profile
@@ -67,3 +68,50 @@ def test_conf_variant_matches_embedded_config(tmp_path):
         prof = profile.decode_profile(open(f"{prefix}-{ptype}.vpn").read())
         embedded = json.loads(prof["containers"][0]["awg"]["last_config"])["config"]
         assert open(f"{prefix}-{ptype}.conf").read() == embedded
+
+
+# --- codec fuzz (seeded, deterministic) ---------------------------------------
+
+def _nasty_string(rng):
+    chars = ('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+             ' \t\n"\'{}[],:/\\-=_+@#$%^&*()~`é你😀')
+    return "".join(rng.choice(chars) for _ in range(rng.randrange(0, 120)))
+
+
+def _random_profile(rng):
+    """Arbitrary JSON-able structure with hostile strings, like the app
+    profiles the codec must carry losslessly."""
+    return {
+        "containers": [{
+            "container": rng.choice(["amnezia-awg", "", "x" * 40]),
+            "awg": {
+                "last_config": json.dumps({
+                    "config": _nasty_string(rng),
+                    "allowed_ips": [rng.choice(["0.0.0.0/0", "::/0",
+                                                "100.64.0.0/24"])],
+                }),
+                "port": rng.choice(["443", "51820", ""]),
+            },
+        }],
+        "description": _nasty_string(rng),
+        "dns1": rng.choice(["100.64.0.1", "1.1.1.1", ""]),
+        "hostName": _nasty_string(rng),
+    }
+
+
+def test_fuzz_roundtrip_random_profiles():
+    rng = random.Random(20261102)
+    for _ in range(300):
+        obj = _random_profile(rng)
+        assert profile.decode_profile(profile.encode_profile(obj)) == obj
+
+
+def test_fuzz_decode_random_blobs_never_hangs():
+    rng = random.Random(4242)
+    for _ in range(500):
+        blob = bytes(rng.randrange(256) for _ in range(rng.randrange(0, 200)))
+        url = profile.b64url_nopad(blob)
+        try:
+            profile.decode_profile(url)
+        except Exception:
+            pass  # any clean failure is fine; a hang/crash would not be

@@ -6,7 +6,10 @@ Reads config/server.env + config/peers.db and writes:
   config/dnsmasq.conf - dnsmasq for MagicDNS (sidecar shares awg netns)
   config/peers.hosts  - MagicDNS host records (dnsmasq --addn-hosts; re-read
                         on SIGHUP so peer changes don't restart the sidecar)
-  config/start.sh     - container entrypoint: awg-quick + iptables bootstrap
+  config/start.sh     - container entrypoint: awg-quick (+ userspace
+                        fallback) + iptables bootstrap
+  config/custom.hosts - created when missing only; operator DNS records
+                        (`awg-mesh dns`) — user data, never re-rendered
 
 Usage: render.py [all|awg0|dnsmasq|peers.hosts|start.sh]
 """
@@ -116,7 +119,20 @@ def render_dnsmasq(env, peers):
     # SIGHUP, so peer add/rename reload MagicDNS without restarting the
     # sidecar. (The main config file is never re-read by dnsmasq.)
     lines.append("addn-hosts=/etc/peers.hosts")
+    # Operator records managed by `awg-mesh dns` (config/custom.hosts). The
+    # file is user data: render only creates it when missing, never
+    # overwrites it.
+    lines.append("addn-hosts=/etc/custom.hosts")
     return "\n".join(lines) + "\n"
+
+
+# Header of config/custom.hosts (the dnsmasq --addn-hosts input for
+# `awg-mesh dns` records). Written only when the file does not exist yet.
+CUSTOM_HOSTS_HEADER = (
+    "# amnezia-mesh custom DNS records (config/custom.hosts).\n"
+    "# Managed by `awg-mesh dns add|remove`; dnsmasq re-reads this file on\n"
+    "# SIGHUP, so changes apply without restarting the sidecar.\n"
+)
 
 
 def render_peers_hosts(env, peers):
@@ -148,7 +164,18 @@ def render_start_sh(env):
 echo "amnezia-mesh: starting"
 sysctl -w net.ipv4.ip_forward=1 2>/dev/null || true
 awg-quick down /opt/amnezia/awg/awg0.conf 2>/dev/null
-awg-quick up /opt/amnezia/awg/awg0.conf || {{ echo "amnezia-mesh: awg-quick failed"; exit 1; }}
+if awg-quick up /opt/amnezia/awg/awg0.conf; then
+  echo "amnezia-mesh: backend up"
+else
+  # VPS without the kernel module (or a tools/module generation mismatch):
+  # force the userspace implementation shipped in the image. Same config,
+  # same obfuscation — ~30-50% CPU overhead is the price.
+  echo "amnezia-mesh: kernel backend failed, falling back to userspace amneziawg-go"
+  awg-quick down /opt/amnezia/awg/awg0.conf 2>/dev/null
+  if ! WG_QUICK_USERSPACE_IMPLEMENTATION=amneziawg-go awg-quick up /opt/amnezia/awg/awg0.conf; then
+    echo "amnezia-mesh: awg-quick failed"; exit 1
+  fi
+fi
 
 SUBNET={subnet}
 IFACE=$(ip route show default 2>/dev/null | awk 'NR==1 {{print $5}}')
@@ -184,6 +211,14 @@ def write(path, content, executable=False, mode=None):
         os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
+def ensure_custom_hosts(out_dir):
+    """Create config/custom.hosts (dnsmasq --addn-hosts input for `awg-mesh
+    dns` records) when missing. User data afterwards — never overwritten."""
+    path = os.path.join(out_dir, "custom.hosts")
+    if not os.path.exists(path):
+        write(path, CUSTOM_HOSTS_HEADER)
+
+
 def render_all():
     env = load_env(ENV_FILE)
     peer_list = load_peers(PEERS_DB)
@@ -196,6 +231,7 @@ def render_all():
           render_peers_hosts(env, peer_list))
     write(os.path.join(out_dir, "start.sh"), render_start_sh(env),
           executable=True)
+    ensure_custom_hosts(out_dir)
     return len(peer_list)
 
 
