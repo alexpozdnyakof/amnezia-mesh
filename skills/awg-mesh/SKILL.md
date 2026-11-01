@@ -72,8 +72,8 @@ awg-mesh --server my-vps peer list --json
 The local CLI runs `ssh my-vps 'cd ~ && awg-mesh <args>'` with the system ssh
 client (aliases and keys come from `~/.ssh/config`) and passes
 stdout/stderr/exit codes through. After a mutating command (`init`, `adopt`,
-`peer add|rename|revoke`) the remote `config/peers/` is mirrored back with
-scp, so the `.vpn` profiles land next to the local checkout. Set
+`peer add|rename|revoke|rotate`) the remote `config/peers/` is mirrored back
+with scp, so the `.vpn` profiles land next to the local checkout. Set
 `AWG_MESH_REMOTE_ROOT` when the mesh root on the server is not the home
 directory. `skill` and `--version` always run locally.
 
@@ -86,21 +86,32 @@ directory. `skill` and `--version` always run locally.
 - Exit codes: 0 ok, 1 runtime failure, 2 usage error.
 - State lives in `config/` next to the CLI: `server.env` (obfuscation
   params, subnet, image), `peers.db` (JSON peer store), `awg0.conf`,
-  `dnsmasq.conf`, `peers.hosts` (MagicDNS records), `start.sh`, `peers/`.
+  `dnsmasq.conf`, `peers.hosts` (MagicDNS records), `custom.hosts`
+  (operator DNS records from `awg-mesh dns`), `start.sh`, `peers/`.
 
 ## Operational model (know this before changing anything)
 
 - Two containers: `amnezia-mesh-awg` (the hub, NET_ADMIN, entrypoint
-  `start.sh` = awg-quick + iptables) and `amnezia-mesh-dns` (dnsmasq
-  sidecar, shares the awg netns). Sidecar must be restarted whenever awg
-  is restarted (it does not follow awg into a new netns by itself).
-- `peer add` / `peer rename` are restart-free: `awg set` adds the peer to
-  the live daemon, SIGHUP makes dnsmasq re-read `peers.hosts`. Existing
-  peers keep their sessions.
-- `peer revoke` restarts both containers. Removing peers from the
-  userspace daemon via UAPI (syncconf/setconf) can silently wedge fresh
-  handshakes — a production incident — so only a process restart is
-  trusted there.
+  `start.sh` = awg-quick + iptables — with a userspace `amneziawg-go`
+  fallback when the kernel module is missing) and `amnezia-mesh-dns`
+  (dnsmasq sidecar, shares the awg netns). Sidecar must be restarted
+  whenever awg is restarted (it does not follow awg into a new netns by
+  itself).
+- `peer add`, `peer rename` (one pair or several at once) and
+  `dns add|remove` are restart-free: `awg set` adds peers to the live
+  daemon, SIGHUP makes dnsmasq re-read `peers.hosts` and `custom.hosts`.
+  Existing peers keep their sessions. A bulk rename validates everything
+  before touching the db, so a failed sweep changes nothing.
+- `peer revoke` and `peer rotate` restart both containers. Removing peers
+  from the userspace daemon via UAPI (syncconf/setconf) can silently wedge
+  fresh handshakes — a production incident — so only a process restart is
+  trusted there. `rotate` re-issues a device's keypair + PSK (name and IP
+  stay); the device must re-import its profile, the old `vpn://` link dies.
+- `awg-mesh dns add|remove|list` manages operator records on top of
+  `<name>.<domain>` (`nas.awg` → any IPv4) in `config/custom.hosts`, a
+  second `--addn-hosts` file dnsmasq re-reads on SIGHUP. Names must not
+  collide with peer or hub names; the file is user data — render never
+  overwrites it.
 - Obfuscation params (Jc/Jmin/Jmax/S1/S2/H1-H4) are per-deployment
   random, set at `init`, and must match on server AND every client.
   Regenerating them invalidates all existing profiles.
@@ -150,8 +161,9 @@ directory. `skill` and `--version` always run locally.
   unknown names. Trust those guards, don't work around them.
 - Never run `init`/`peer`/`adopt` against a deploy root the user didn't
   point you at — and never against a production server to "test".
-- Revoke is destructive (profiles deleted, devices cut off) and restarts
-  the hub for everyone. Confirm with the user first.
+- Revoke and key rotation are destructive (profiles deleted or re-issued,
+  devices cut off until they re-import) and restart the hub for everyone.
+  Confirm with the user first.
 - Prefer `doctor --json` before and after any change; it's the project's
   own definition of "healthy".
 - `awg-mesh-tui install --ssh <target>` copies the CLI onto that host.
