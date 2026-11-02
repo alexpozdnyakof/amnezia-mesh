@@ -1,4 +1,4 @@
-[English](README.md) | [Русский](README.ru.md) | [中文](README.zh-CN.md) | [Español](README.es.md) | [فارسی](README.fa.md) | [العربية](README.ar.md) | [Português](README.pt-BR.md) | **日本語** | [Deutsch](README.de.md)
+[English](README.md) | [Русский](README.ru.md) | [中文](README.zh-CN.md) | [Español](README.es.md) | [فارسی](README.fa.md) | [العربية](README.ar.md) | [Português](README.pt-BR.md) | **日本語** | [Deutsch](README.de.md) | [한국어](README.ko.md) | [Français](README.fr.md) | [हिन्दी](README.hi.md) | [Bahasa Indonesia](README.id.md) | [Українська](README.uk.md)
 
 _英語版 README の翻訳です。原文より遅れる場合があります。_
 
@@ -41,6 +41,30 @@ AmneziaWG によるトラフィック難読化、MagicDNS、Tailscale 風の exi
 - VPS ファイアウォールで開いた UDP ポート（推奨は 443/udp — 通常の
   HTTPS/QUIC トラフィックに紛れ、ISP がシェイピングしにくい）。
 
+## AI エージェントとのセットアップ（Claude Code、Kimi Code、Cursor など）
+
+CLI には専用のオペレータースキルが同梱されています。インストール、
+自動化プロトコル、再起動のセマンティクス、診断のためのデシジョンツリーを
+網羅したコンパクトな runbook です。これをエージェントに渡せば、一連の
+流れが会話形式になります：
+
+```sh
+# macOS cask: awg-mesh（CLI）と awg-mesh-tui。Linux: Releases を参照。
+brew tap alexpozdnyakof/tap
+brew install --cask alexpozdnyakof/tap/awg-mesh
+# または: 本リポジトリを git clone
+
+awg-mesh-tui install --ssh root@あなたのVPS --json
+awg-mesh skill --install   # ~/.agents/skills/awg-mesh/SKILL.md
+```
+
+あとは依頼するだけです。例：*"この VPS（IP 203.0.113.7）に VPN を立てて、
+ノート PC とスマホを追加して、自己チェックを回して"*。エージェントは
+`awg-mesh init` / `peer add` / `doctor --json` を実行し、生成された
+プロファイルをデバイスにインポートし、スキルのデシジョンツリーで接続性を
+診断します。リポジトリルートの `AGENTS.md` は checkout 内で作業する
+エージェントに対して同じオリエンテーションを提供します。
+
 ## クイックスタート（人間向け）
 
 ```sh
@@ -77,13 +101,31 @@ export AWG_MESH_NONINTERACTIVE=1
 | コマンド | 説明 |
 |---|---|
 | `awg-mesh init [--host H] [--port P] [--subnet CIDR] [--image IMG] [--domain D] [--rdp-reject]` | 鍵 + ランダム難読化パラメータの生成、設定のレンダリング、コンテナ起動 |
-| `awg-mesh peer add <name> [--type exit\|mesh\|both]` | 新規デバイス: 鍵、IP、プロファイル（`awg syncconf` で適用後、awg コンテナを再起動 — syncconf だけだと userspace デーモンが新規ハンドシェイクを静かに失敗することがある） |
+| `awg-mesh peer add <name> [--type exit\|mesh\|both]` | 新規デバイス: 鍵、IP、プロファイル（`awg set` + dnsmasq SIGHUP でライブ適用 — 再起動なし。既存 peer のセッションは維持） |
 | `awg-mesh peer list` | デバイス、IP、作成日時 |
-| `awg-mesh peer rename <name> <new-name>` | デバイスの改名（MagicDNS の `<name>.<domain>` レコードも追随） |
-| `awg-mesh peer revoke <name>` | デバイスの削除（設定適用済み、プロファイルは削除） |
+| `awg-mesh peer rename <name> <new-name> [pairs...]` | デバイスの改名 — 旧名/新名のペアを複数渡せば、adopt 後の `peer-xxxx` 自動生成名を一掃できる（MagicDNS 名も追随。dnsmasq SIGHUP のみ — 再起動なし。all-or-nothing バリデーション、スワップ対応） |
+| `awg-mesh peer rotate <name>` | デバイスの鍵を再発行（IP は同じ。hub は revoke と同様に再起動 — デバイスはプロファイルを再インポートする必要があり、古い `vpn://` リンクは無効化） |
+| `awg-mesh peer revoke <name>` | デバイスの削除（awg + dns コンテナが再起動 — userspace デーモンから UAPI で peer を外すと新規ハンドシェイクが静かに詰まることがある。プロファイルは削除） |
 | `awg-mesh doctor [--json]` | Docker、コンテナ、リッスンポート、ip_forward、MagicDNS、ポート公開 |
+| `awg-mesh dns add <name> <ipv4>` / `dns remove <name>` / `dns list` | `<name>.<domain>` 上にカスタム MagicDNS レコードを追加（`nas.awg` → 任意の IPv4）。`config/custom.hosts` に保存 — dnsmasq の 2 つ目の `--addn-hosts` で SIGHUP リロード、再起動なし |
 | `awg-mesh monitoring install\|uninstall` | cron 統計（`/var/log/amnezia-mesh-stats.log`）+ watchdog |
 | `awg-mesh adopt (--container C \| --config F --image IMG) --host H [--port P] [--dns1 D] [--dns2 D] [--rdp-reject]` | 既存の AmneziaWG サーバーを awg-mesh 管理へ移行（下記参照） |
+
+## リモートモード（Mac からサーバーを管理）
+
+```sh
+awg-mesh --server my-vps peer list --json   # または: export AWG_MESH_SSH=my-vps
+```
+
+ローカル CLI はシステムの ssh クライアントで
+`ssh my-vps 'cd ~ && awg-mesh <args>'` を実行し（`~/.ssh/config` の
+エイリアスと鍵を利用）、stdout/stderr/終了コードをそのまま透過します —
+ローカルでロジックが重複することはありません。変更系コマンド
+（`init`、`adopt`、`peer add|rename|revoke|rotate`）の後は、リモートの
+`config/peers/` が scp でミラーバックされ、`.vpn` プロファイルがローカル
+の checkout の隣に置かれます。`AWG_MESH_REMOTE_ROOT` でサーバー上の
+メッシュルートを指定（デフォルト `~`）。`skill` と `--version` は常に
+ローカルで実行されます。
 
 ## 既存サーバーの移行（adopt）
 

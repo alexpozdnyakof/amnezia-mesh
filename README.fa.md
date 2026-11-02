@@ -1,4 +1,4 @@
-[English](README.md) | [Русский](README.ru.md) | [中文](README.zh-CN.md) | [Español](README.es.md) | **فارسی** | [العربية](README.ar.md) | [Português](README.pt-BR.md) | [日本語](README.ja.md) | [Deutsch](README.de.md)
+[English](README.md) | [Русский](README.ru.md) | [中文](README.zh-CN.md) | [Español](README.es.md) | **فارسی** | [العربية](README.ar.md) | [Português](README.pt-BR.md) | [日本語](README.ja.md) | [Deutsch](README.de.md) | [한국어](README.ko.md) | [Français](README.fr.md) | [हिन्दी](README.hi.md) | [Bahasa Indonesia](README.id.md) | [Українська](README.uk.md)
 
 _ترجمه‌ای از README انگلیسی است و ممکن است از متن اصلی عقب‌تر باشد._
 
@@ -38,6 +38,29 @@ exit/mesh به سبک Tailscale — روی یک VPS، در حدود ۱۰ دقی�
 - یک پورت UDP باز در فایروال VPS (‏443/udp توصیه می‌شود — با ترافیک معمولی
   HTTPS/QUIC قاطی می‌شود و برای ISP شکل‌دادن به آن سخت‌ترین است).
 
+## راه‌اندازی با عامل هوش مصنوعی (Claude Code, Kimi Code, Cursor, …)
+
+CLI اسکیل عملیاتی خودش را دارد — یک runbook فشرده که نصب، پروتکل
+اتوماسیون، معنای ری‌استارت و درخت تصمیم عیب‌یابی را پوشش می‌دهد. آن را به
+عامل خود بدهید تا کل جریان گفتگویی شود:
+
+```sh
+# cask مک: awg-mesh (CLI) و awg-mesh-tui. لینوکس: Releases را ببینید.
+brew tap alexpozdnyakof/tap
+brew install --cask alexpozdnyakof/tap/awg-mesh
+# یا: git clone این ریپو
+
+awg-mesh-tui install --ssh root@VPS_شما --json
+awg-mesh skill --install   # ~/.agents/skills/awg-mesh/SKILL.md
+```
+
+بعد فقط بخواهید، مثلاً *«روی این VPS (IP 203.0.113.7) VPNام را راه‌انداز کن،
+لپ‌تاپ و گوشی من را اضافه کن، بعد خودآزمایی‌ها را اجرا کن»*. عامل دستورات
+`awg-mesh init` / `peer add` / `doctor --json` را اجرا می‌کند، پروفایل‌های
+تولیدشده را روی دستگاه‌ها ایمپورت می‌کند و با درخت تصمیم اسکیل به
+اتصال‌پذیری عیب‌یابی می‌کند. `AGENTS.md` در ریشه ریپو همین جهت‌دهی را برای
+عامل‌هایی که داخل checkout کار می‌کنند انجام می‌دهد.
+
 ## شروع سریع (انسان)
 
 ```sh
@@ -73,13 +96,29 @@ export AWG_MESH_NONINTERACTIVE=1
 | دستور | توضیح |
 |---|---|
 | `awg-mesh init [--host H] [--port P] [--subnet CIDR] [--image IMG] [--domain D] [--rdp-reject]` | تولید کلیدها + مبهم‌سازی تصادفی، رندر کانفیگ‌ها، اجرای کانتینرها |
-| `awg-mesh peer add <name> [--type exit\|mesh\|both]` | دستگاه جدید: کلیدها، IP، پروفایل‌ها (با `awg syncconf` اعمال می‌شود، سپس کانتینر awg ری‌استارت می‌شود — syncconf به‌تنهایی می‌تواند دست‌دادن‌های تازه را در دیمون userspace بی‌صدا خراب کند) |
+| `awg-mesh peer add <name> [--type exit\|mesh\|both]` | دستگاه جدید: کلیدها، IP، پروفایل‌ها (اعمال زنده با `awg set` + SIGHUP dnsmasq — بدون ری‌استارت؛ پیرهای موجود نشست‌شان را حفظ می‌کنند) |
 | `awg-mesh peer list` | دستگاه‌ها، IPها، تاریخ‌های ساخت |
-| `awg-mesh peer rename <name> <new-name>` | تغییر نام دستگاه (رکورد MagicDNS `<name>.<domain>` دنبال نام می‌آید) |
-| `awg-mesh peer revoke <name>` | حذف دستگاه (کانفیگ اعمال می‌شود، پروفایل‌ها پاک می‌شوند) |
+| `awg-mesh peer rename <name> <new-name> [pairs...]` | تغییر نام دستگاه(ها) — چند جفت قدیمی/جدید می‌پذیرد تا نام‌های تولیدشده `peer-xxxx` پس از adopt یک‌جارو شوند (نام‌های MagicDNS دنبال می‌آیند؛ فقط SIGHUP dnsmasq — بدون ری‌استارت؛ اعتبارسنجی all-or-nothing، تعویض پشتیبانی می‌شود) |
+| `awg-mesh peer rotate <name>` | بازصدور کلیدهای دستگاه (همان IP؛ هاب مثل revoke ری‌استارت می‌شود — دستگاه باید پروفایلش را دوباره ایمپورت کند، لینک قدیمی `vpn://` از کار می‌افتد) |
+| `awg-mesh peer revoke <name>` | حذف دستگاه (کانتینرهای awg + dns ری‌استارت می‌شوند — حذف پیر از دیمون userspace از طریق UAPI می‌تواند دست‌دادن‌های تازه را بی‌صدا قفل کند؛ پروفایل‌ها پاک می‌شوند) |
 | `awg-mesh doctor [--json]` | Docker، کانتینرها، پورت گوش‌دادن، ip_forward، MagicDNS، انتشار پورت |
+| `awg-mesh dns add <name> <ipv4>` / `dns remove <name>` / `dns list` | رکوردهای MagicDNS سفارش روی `<name>.<دامنه>` (`nas.awg` → هر IPv4) در `config/custom.hosts` — یک `--addn-hosts` دوم برای dnsmasq، با SIGHUP بازخوانی می‌شود، بدون ری‌استارت |
 | `awg-mesh monitoring install\|uninstall` | آمار cron (`/var/log/amnezia-mesh-stats.log`) + watchdog |
 | `awg-mesh adopt (--container C \| --config F --image IMG) --host H [--port P] [--dns1 D] [--dns2 D] [--rdp-reject]` | مهاجرت یک سرور AmneziaWG موجود به مدیریت awg-mesh (پایین را ببینید) |
+
+## حالت راه دور (مدیریت سرور از مک)
+
+```sh
+awg-mesh --server my-vps peer list --json   # یا: export AWG_MESH_SSH=my-vps
+```
+
+CLI محلی دستور `ssh my-vps 'cd ~ && awg-mesh <args>'` را با کلاینت ssh سیستم
+اجرا می‌کند (aliasها و کلیدها از `~/.ssh/config`) و stdout/stderr/کدهای خروجی
+را عبور می‌دهد — هیچ منطقی به‌صورت محلی تکرار نمی‌شود. پس از دستور تغییردهنده
+(`init`، `adopt`، `peer add|rename|revoke|rotate`) مسیر `config/peers/` راه‌دور
+با scp به محل برمی‌گردد تا پروفایل‌های `.vpn` کنار checkout محلی شما باشند.
+`AWG_MESH_REMOTE_ROOT` ریشه مش روی سرور را تنظیم می‌کند (پیش‌فرض `~`).
+`skill` و `--version` همیشه محلی اجرا می‌شوند.
 
 ## اتخاذ سرور موجود (adopt)
 

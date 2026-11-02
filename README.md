@@ -1,4 +1,4 @@
-**English** | [Русский](README.ru.md) | [中文](README.zh-CN.md) | [Español](README.es.md) | [فارسی](README.fa.md) | [العربية](README.ar.md) | [Português](README.pt-BR.md) | [日本語](README.ja.md) | [Deutsch](README.de.md)
+**English** | [Русский](README.ru.md) | [中文](README.zh-CN.md) | [Español](README.es.md) | [فارسی](README.fa.md) | [العربية](README.ar.md) | [Português](README.pt-BR.md) | [日本語](README.ja.md) | [Deutsch](README.de.md) | [한국어](README.ko.md) | [Français](README.fr.md) | [हिन्दी](README.hi.md) | [Bahasa Indonesia](README.id.md) | [Українська](README.uk.md)
 
 # amnezia-mesh
 
@@ -114,7 +114,7 @@ awg-mesh --server my-vps peer list --json   # or: export AWG_MESH_SSH=my-vps
 The local CLI runs `ssh my-vps 'cd ~ && awg-mesh <args>'` with the system ssh
 client (aliases and keys from `~/.ssh/config`) and passes stdout/stderr/exit
 codes through — no logic is duplicated locally. After a mutating command
-(`init`, `adopt`, `peer add|rename|revoke`) the remote `config/peers/` is
+(`init`, `adopt`, `peer add|rename|revoke|rotate`) the remote `config/peers/` is
 mirrored back with scp, so the `.vpn` profiles land next to the local
 checkout. `AWG_MESH_REMOTE_ROOT` sets the mesh root on the server (default
 `~`). `skill` and `--version` always run locally.

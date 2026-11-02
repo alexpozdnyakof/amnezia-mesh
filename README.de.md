@@ -1,4 +1,4 @@
-[English](README.md) | [Русский](README.ru.md) | [中文](README.zh-CN.md) | [Español](README.es.md) | [فارسی](README.fa.md) | [العربية](README.ar.md) | [Português](README.pt-BR.md) | [日本語](README.ja.md) | **Deutsch**
+[English](README.md) | [Русский](README.ru.md) | [中文](README.zh-CN.md) | [Español](README.es.md) | [فارسی](README.fa.md) | [العربية](README.ar.md) | [Português](README.pt-BR.md) | [日本語](README.ja.md) | **Deutsch** | [한국어](README.ko.md) | [Français](README.fr.md) | [हिन्दी](README.hi.md) | [Bahasa Indonesia](README.id.md) | [Українська](README.uk.md)
 
 _Übersetzung des englischen READMEs; kann dem Original hinterherhinken._
 
@@ -39,6 +39,30 @@ Koordinierungsserver, keine Accounts, keine Third-Party-Relays.
 - Ein offener UDP-Port in der VPS-Firewall (empfohlen: 443/udp — er mischt sich
   unter normalen HTTPS/QUIC-Traffic und ist für ISPs am schwersten zu shapen).
 
+## Einrichtung mit einem KI-Agenten (Claude Code, Kimi Code, Cursor, …)
+
+Die CLI bringt ihren eigenen Operator-Skill mit — ein kompaktes Runbook, das
+Installation, Automatisierungsprotokoll, Neustart-Semantik und einen
+Diagnose-Entscheidungsbaum abdeckt. Gib ihn deinem Agenten und der ganze Ablauf
+wird gesprächig:
+
+```sh
+# macOS-Cask: awg-mesh (CLI) und awg-mesh-tui. Linux: siehe Releases.
+brew tap alexpozdnyakof/tap
+brew install --cask alexpozdnyakof/tap/awg-mesh
+# oder: git clone dieses Repos
+
+awg-mesh-tui install --ssh root@DEIN_VPS --json
+awg-mesh skill --install   # ~/.agents/skills/awg-mesh/SKILL.md
+```
+
+Dann einfach fragen, z. B. *«richt mein VPN auf diesem VPS ein (IP 203.0.113.7),
+füg meinen Laptop und mein Handy hinzu und lass dann die Selbsttests laufen»*.
+Der Agent führt `awg-mesh init` / `peer add` / `doctor --json` aus, importiert
+die erzeugten Profile auf deine Geräte und diagnostiziert die Konnektivität mit
+dem Entscheidungsbaum des Skills. `AGENTS.md` im Repo-Root macht dieselbe
+Orientierung für Agenten, die innerhalb eines Checkouts arbeiten.
+
 ## Schnellstart (menschlich)
 
 ```sh
@@ -74,13 +98,30 @@ Exit-Code ungleich null und es kommt `{"ok": false, "error": "..."}`.
 | Kommando | Beschreibung |
 |---|---|
 | `awg-mesh init [--host H] [--port P] [--subnet CIDR] [--image IMG] [--domain D] [--rdp-reject]` | Schlüssel + zufällige Obfuskation erzeugen, Configs rendern, Container starten |
-| `awg-mesh peer add <name> [--type exit\|mesh\|both]` | Neues Gerät: Schlüssel, IP, Profile (wird via `awg syncconf` angewendet, danach wird der awg-Container neu gestartet — syncconf allein kann frische Handshakes im Userspace-Daemon still kaputt machen) |
+| `awg-mesh peer add <name> [--type exit\|mesh\|both]` | Neues Gerät: Schlüssel, IP, Profile (Live-Anwendung via `awg set` + dnsmasq-SIGHUP — kein Neustart; bestehende Peers behalten ihre Sessions) |
 | `awg-mesh peer list` | Geräte, IPs, Erstellungsdaten |
-| `awg-mesh peer rename <name> <new-name>` | Gerät umbenennen (der `<name>.<domain>`-MagicDNS-Eintrag folgt dem Namen) |
-| `awg-mesh peer revoke <name>` | Gerät entfernen (Config angewendet, Profile gelöscht) |
+| `awg-mesh peer rename <name> <new-name> [pairs...]` | Gerät(e) umbenennen — mehrere alt/neu-Paare auf einmal, um generierte `peer-xxxx`-Namen nach einem adopt in einem Rutsch aufzuräumen (MagicDNS-Namen folgen; nur dnsmasq-SIGHUP — kein Neustart; All-or-nothing-Validierung, Swaps unterstützt) |
+| `awg-mesh peer rotate <name>` | Schlüssel eines Geräts neu ausstellen (gleiche IP; der Hub startet wie bei revoke neu — das Gerät muss sein Profil neu importieren, der alte `vpn://`-Link stirbt) |
+| `awg-mesh peer revoke <name>` | Gerät entfernen (awg- + dns-Container werden neu gestartet — das Entfernen von Peers aus dem Userspace-Daemon via UAPI kann frische Handshakes still blockieren; Profile gelöscht) |
 | `awg-mesh doctor [--json]` | Docker, Container, Listen-Port, ip_forward, MagicDNS, Port-Veröffentlichung |
+| `awg-mesh dns add <name> <ipv4>` / `dns remove <name>` / `dns list` | Eigene MagicDNS-Einträge über `<name>.<domain>` (`nas.awg` → beliebige IPv4) in `config/custom.hosts` — eine zweite `--addn-hosts`-Datei für dnsmasq, via SIGHUP neu geladen, kein Neustart |
 | `awg-mesh monitoring install\|uninstall` | Cron-Statistiken (`/var/log/amnezia-mesh-stats.log`) + Watchdog |
 | `awg-mesh adopt (--container C \| --config F --image IMG) --host H [--port P] [--dns1 D] [--dns2 D] [--rdp-reject]` | Einen bestehenden AmneziaWG-Server unter awg-mesh-Verwaltung migrieren (siehe unten) |
+
+## Remote-Modus (Server vom Mac aus verwalten)
+
+```sh
+awg-mesh --server my-vps peer list --json   # oder: export AWG_MESH_SSH=my-vps
+```
+
+Die lokale CLI führt `ssh my-vps 'cd ~ && awg-mesh <args>'` mit dem
+System-ssh-Client aus (Aliase und Keys aus `~/.ssh/config`) und reicht
+stdout/stderr/Exit-Codes durch — lokal wird keine Logik dupliziert. Nach einem
+mutierenden Kommando (`init`, `adopt`, `peer add|rename|revoke|rotate`) wird
+das entfernte `config/peers/` per scp zurückgespiegelt, sodass die `.vpn`-
+Profile neben deinem lokalen Checkout landen. `AWG_MESH_REMOTE_ROOT` setzt die
+Mesh-Wurzel auf dem Server (Standard `~`). `skill` und `--version` laufen immer
+lokal.
 
 ## Einen bestehenden Server übernehmen (adopt)
 

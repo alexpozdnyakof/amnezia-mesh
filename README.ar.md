@@ -1,4 +1,4 @@
-[English](README.md) | [Русский](README.ru.md) | [中文](README.zh-CN.md) | [Español](README.es.md) | [فارسی](README.fa.md) | **العربية** | [Português](README.pt-BR.md) | [日本語](README.ja.md) | [Deutsch](README.de.md)
+[English](README.md) | [Русский](README.ru.md) | [中文](README.zh-CN.md) | [Español](README.es.md) | [فارسی](README.fa.md) | **العربية** | [Português](README.pt-BR.md) | [日本語](README.ja.md) | [Deutsch](README.de.md) | [한국어](README.ko.md) | [Français](README.fr.md) | [हिन्दी](README.hi.md) | [Bahasa Indonesia](README.id.md) | [Українська](README.uk.md)
 
 _ترجمة لملف README الإنجليزي وقد تتأخر عن الأصل._
 
@@ -37,6 +37,28 @@ Amnezia الرسمي على أجهزتك، وبدون خوادم تنسيق أو
 - منفذ UDP مفتوح في جدار حماية VPS (يُنصح بـ 443/udp — يمتزج مع ترافيك
   HTTPS/QUIC العادي ويصعب على مزودي الخدمة تشكيله).
 
+## الإعداد مع وكيل ذكاء اصطناعي (Claude Code, Kimi Code, Cursor, …)
+
+يحمل CLI مهارة المشغّل الخاصة به — دليل تشغيل مدمج يغطي التثبيت وبروتوكول
+الأتمتة ودلالات إعادة التشغيل وشجرة قرارات للتشخيص. أعطها لوكيلك ويصبح التدفق
+كله حوارياً:
+
+```sh
+# cask لنظام macOS: awg-mesh ‏(CLI) وawg-mesh-tui. لنظام Linux: انظر Releases.
+brew tap alexpozdnyakof/tap
+brew install --cask alexpozdnyakof/tap/awg-mesh
+# أو: git clone لهذا المستودع
+
+awg-mesh-tui install --ssh root@YOUR_VPS --json
+awg-mesh skill --install   # ~/.agents/skills/awg-mesh/SKILL.md
+```
+
+ثم فقط اطلب، مثلاً: *«أعدّ VPN على هذا الـ VPS ‏(IP 203.0.113.7)، أضف
+حاسوبي المحمول وهاتفي، ثم شغّل الفحوصات الذاتية»*. ينفذ الوكيل أوامر
+`awg-mesh init` / `peer add` / `doctor --json`، ويستورد ملفات التعريف المولّدة
+على أجهزتك، ويشخّص الاتصال عبر شجرة القرارات في المهارة. يلعب `AGENTS.md` في
+جذر المستودع الدور التوجيهي نفسه للوكلاء العاملين داخل نسخة checkout.
+
 ## البدء السريع (بشري)
 
 ```sh
@@ -72,13 +94,29 @@ export AWG_MESH_NONINTERACTIVE=1
 | الأمر | الوصف |
 |---|---|
 | `awg-mesh init [--host H] [--port P] [--subnet CIDR] [--image IMG] [--domain D] [--rdp-reject]` | توليد المفاتيح + تعمية عشوائية، تصيير الإعدادات، تشغيل الحاويات |
-| `awg-mesh peer add <name> [--type exit\|mesh\|both]` | جهاز جديد: مفاتيح وIP وملفات تعريف (تُطبق عبر `awg syncconf` ثم تُعاد تشغيل حاوية awg — فـ syncconf وحده قد يعطّل المصافحات الجديدة بصمت في دايمون userspace) |
+| `awg-mesh peer add <name> [--type exit\|mesh\|both]` | جهاز جديد: مفاتيح وIP وملفات تعريف (تُطبق مباشرة عبر `awg set` + إشارة SIGHUP لـ dnsmasq — بلا إعادة تشغيل؛ الأقران الموجودون يحتفظون بجلساتهم) |
 | `awg-mesh peer list` | الأجهزة وعناوين IP وتواريخ الإنشاء |
-| `awg-mesh peer rename <name> <new-name>` | إعادة تسمية جهاز (سجل MagicDNS `<name>.<domain>` يتبع الاسم) |
-| `awg-mesh peer revoke <name>` | إزالة جهاز (يُطبق الإعداد وتُحذف ملفات التعريف) |
+| `awg-mesh peer rename <name> <new-name> [pairs...]` | إعادة تسمية جهاز (أجهزة) — يقبل عدة أزواج قديم/جديد لكنس الأسماء المولّدة `peer-xxxx` دفعة واحدة بعد adopt (أسماء MagicDNS تتبع؛ SIGHUP لـ dnsmasq فقط — بلا إعادة تشغيل؛ تحقق all-or-nothing، والتبديلات مدعومة) |
+| `awg-mesh peer rotate <name>` | إعادة إصدار مفاتيح الجهاز (نفس IP؛ يُعاد تشغيل الـ hub كما في revoke — يجب على الجهاز استيراد ملف التعريف من جديد، ورابط `vpn://` القديم يتوقف) |
+| `awg-mesh peer revoke <name>` | إزالة جهاز (تُعاد تشغيل حاويتي awg + dns — إزالة الأقران من دايمون userspace عبر UAPI قد تعلق المصافحات الجديدة بصمت؛ تُحذف ملفات التعريف) |
 | `awg-mesh doctor [--json]` | Docker والحاويات ومنفذ الاستماع وip_forward وMagicDNS ونشر المنافذ |
+| `awg-mesh dns add <name> <ipv4>` / `dns remove <name>` / `dns list` | سجلات MagicDNS مخصصة فوق `<name>.<domain>` (`nas.awg` → أي IPv4) في `config/custom.hosts` — `--addn-hosts` ثانٍ لـ dnsmasq، يُعاد تحميله بإشارة SIGHUP، بلا إعادة تشغيل |
 | `awg-mesh monitoring install\|uninstall` | إحصاءات cron (`/var/log/amnezia-mesh-stats.log`) + watchdog |
 | `awg-mesh adopt (--container C \| --config F --image IMG) --host H [--port P] [--dns1 D] [--dns2 D] [--rdp-reject]` | ترحيل خادم AmneziaWG موجود إلى إدارة awg-mesh (انظر أدناه) |
+
+## الوضع عن بُعد (إدارة الخادم من جهاز Mac)
+
+```sh
+awg-mesh --server my-vps peer list --json   # أو: export AWG_MESH_SSH=my-vps
+```
+
+ينفذ CLI المحلي الأمر `ssh my-vps 'cd ~ && awg-mesh <args>'` عبر عميل ssh
+النظامي (الأسماء المستعارة والمفاتيح من `~/.ssh/config`) ويمرر stdout/stderr/
+رموز الخروج — لا يُكرر أي منطق محلياً. بعد أمر معدِل (`init`، `adopt`،
+`peer add|rename|revoke|rotate`) تُعكس نسخة `config/peers/` البعيدة عبر scp
+فتستقر ملفات `.vpn` بجانب checkout المحلي. يحدد `AWG_MESH_REMOTE_ROOT` جذر
+الشبكة على الخادم (الافتراضي `~`). أمرا `skill` و`--version` ينفذان محلياً
+دائماً.
 
 ## تبنّي خادم موجود
 

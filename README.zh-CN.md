@@ -1,4 +1,4 @@
-[English](README.md) | [Русский](README.ru.md) | **中文** | [Español](README.es.md) | [فارسی](README.fa.md) | [العربية](README.ar.md) | [Português](README.pt-BR.md) | [日本語](README.ja.md) | [Deutsch](README.de.md)
+[English](README.md) | [Русский](README.ru.md) | **中文** | [Español](README.es.md) | [فارسی](README.fa.md) | [العربية](README.ar.md) | [Português](README.pt-BR.md) | [日本語](README.ja.md) | [Deutsch](README.de.md) | [한국어](README.ko.md) | [Français](README.fr.md) | [हिन्दी](README.hi.md) | [Bahasa Indonesia](README.id.md) | [Українська](README.uk.md)
 
 _本文件是英文 README 的翻译，内容可能落后于原文。_
 
@@ -37,6 +37,28 @@ Docker 外零依赖。
 - 防火墙开放的 UDP 端口（推荐 443/udp——它混入常规 HTTPS/QUIC 流量，
   ISP 最难对其进行流量整形）。
 
+## 配合 AI Agent 安装（Claude Code、Kimi Code、Cursor 等）
+
+CLI 内置了专用的操作技能（skill）——一份精简的运行手册，涵盖安装、
+自动化协议、重启语义和故障排查决策树。把它交给你的 Agent，整个流程
+就变成对话式的：
+
+```sh
+# macOS cask：awg-mesh（CLI）和 awg-mesh-tui。Linux：见 Releases。
+brew tap alexpozdnyakof/tap
+brew install --cask alexpozdnyakof/tap/awg-mesh
+# 或者：git clone 本仓库
+
+awg-mesh-tui install --ssh root@你的VPS --json
+awg-mesh skill --install   # ~/.agents/skills/awg-mesh/SKILL.md
+```
+
+然后直接提需求即可，例如：*"在这台 VPS（IP 203.0.113.7）上搭好 VPN，
+添加我的笔记本和手机，然后运行自检"*。Agent 会执行
+`awg-mesh init` / `peer add` / `doctor --json`，把生成的配置导入设备，
+并用技能书中的决策树诊断连通性。仓库根目录的 `AGENTS.md` 则为在
+checkout 中工作的 Agent 提供同样的指引。
+
 ## 快速上手（人工）
 
 ```sh
@@ -72,13 +94,29 @@ export AWG_MESH_NONINTERACTIVE=1
 | 命令 | 说明 |
 |---|---|
 | `awg-mesh init [--host H] [--port P] [--subnet CIDR] [--image IMG] [--domain D] [--rdp-reject]` | 生成密钥 + 随机混淆参数，渲染配置，启动容器 |
-| `awg-mesh peer add <name> [--type exit\|mesh\|both]` | 新设备：密钥、IP、配置文件（通过 `awg syncconf` 应用，随后重启 awg 容器——单独使用 syncconf 可能使 userspace 守护进程的后续握手静默失效） |
+| `awg-mesh peer add <name> [--type exit\|mesh\|both]` | 新设备：密钥、IP、配置文件（通过 `awg set` + dnsmasq SIGHUP 实时生效——无需重启；已有 peer 的会话不受影响） |
 | `awg-mesh peer list` | 设备、IP、创建时间 |
-| `awg-mesh peer rename <name> <new-name>` | 重命名设备（其 `<name>.<domain>` MagicDNS 记录随之更新） |
-| `awg-mesh peer revoke <name>` | 移除设备（配置已应用，配置文件已删除） |
+| `awg-mesh peer rename <name> <new-name> [pairs...]` | 重命名设备——可传入多组 旧名/新名，在 adopt 之后一次性清理生成的 `peer-xxxx` 名称（MagicDNS 名称随之更新；仅 dnsmasq SIGHUP——不重启；校验 all-or-nothing，支持交换） |
+| `awg-mesh peer rotate <name>` | 重新签发设备的密钥（IP 不变；hub 像 revoke 一样重启——设备必须重新导入配置，旧的 `vpn://` 链接失效） |
+| `awg-mesh peer revoke <name>` | 移除设备（awg + dns 容器重启——通过 UAPI 从 userspace 守护进程移除 peer 可能使后续握手静默失效；配置文件已删除） |
 | `awg-mesh doctor [--json]` | Docker、容器、监听端口、ip_forward、MagicDNS、端口发布 |
+| `awg-mesh dns add <name> <ipv4>` / `dns remove <name>` / `dns list` | 在 `<name>.<domain>` 之上添加自定义 MagicDNS 记录（`nas.awg` → 任意 IPv4），写入 `config/custom.hosts`——dnsmasq 的第二个 `--addn-hosts`，通过 SIGHUP 重载，不重启 |
 | `awg-mesh monitoring install\|uninstall` | cron 统计（`/var/log/amnezia-mesh-stats.log`）+ watchdog |
 | `awg-mesh adopt (--container C \| --config F --image IMG) --host H [--port P] [--dns1 D] [--dns2 D] [--rdp-reject]` | 将已有的 AmneziaWG 服务器迁移到 awg-mesh 管理之下（见下文） |
+
+## 远程模式（从 Mac 管理服务器）
+
+```sh
+awg-mesh --server my-vps peer list --json   # 或：export AWG_MESH_SSH=my-vps
+```
+
+本地 CLI 通过系统 ssh 客户端执行 `ssh my-vps 'cd ~ && awg-mesh <args>'`
+（别名和密钥取自 `~/.ssh/config`），并透传 stdout/stderr/退出码——本地
+不重复实现任何逻辑。执行变更类命令（`init`、`adopt`、
+`peer add|rename|revoke|rotate`）后，远端的 `config/peers/` 会通过 scp
+同步回本地，因此 `.vpn` 配置会与本地 checkout 放在一起。
+`AWG_MESH_REMOTE_ROOT` 设置服务器上的 mesh 根目录（默认 `~`）。`skill`
+和 `--version` 始终在本地执行。
 
 ## 接管已有服务器（adopt）
 
