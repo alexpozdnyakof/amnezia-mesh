@@ -4,7 +4,7 @@
 any logic locally — it runs `ssh <alias> 'cd <root> && awg-mesh <args>'` with
 the system ssh client (keys/aliases from the user's ~/.ssh/config) and passes
 stdout/stderr/exit code through. After a MUTATING command (init, adopt without
---inspect, peer add|rename|revoke) exits 0, config/peers/ is pulled back with
+--inspect, peer add|rename|revoke|rotate, mesh link|endpoint|config) exits 0, config/peers/ is pulled back with
 scp so the .vpn profiles land in the local root. `skill` and `--version` stay
 local. Byte-parity with the Go port is the contract: same remote command
 string, same quoting (shlex), same warnings.
@@ -62,6 +62,10 @@ def mutating(argv):
         return True
     if argv[0] == "adopt":
         return "--inspect" not in argv[1:]
+    if argv[0] == "mesh":
+        return argv[1:3] in (["link", "add"], ["link", "remove"],
+                             ["endpoint", "set"], ["endpoint", "unset"]) \
+            or argv[1:2] == ["config"]
     return argv[0] == "peer" and len(argv) > 1 and argv[1] in _PEER_MUTATIONS
 
 

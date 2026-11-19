@@ -19,7 +19,7 @@ from . import MeshError, __version__, root
 from . import compose as compose_mod
 from . import doctor as doctor_mod
 from . import proxy, skill
-from . import adopt, keygen, peers, profile, render
+from . import adopt, keygen, mesh, peers, profile, render
 from .envfile import load as load_env
 
 JSON_MODE = False
@@ -422,6 +422,7 @@ def cmd_peer_rename(args):
             if p["name"] in mapping:
                 p["name"] = mapping[p["name"]]
         tx.dirty = True
+        mesh.rename_peers(r, mapping)
     render.render_all()
     apply_rename(env)
     for old, new in ops:
@@ -462,6 +463,8 @@ def cmd_peer_rotate(args):
     prefix = os.path.join(r, "config", "peers", name)
     profile.generate_profiles(env_file=env_file, name=name, ip=ip,
                               priv=priv, pub=pub, psk=psk, out_prefix=prefix)
+    # the pubkey changed: this device's and its partners' p2p profiles follow
+    _refresh_p2p(r, env_file, [name] + mesh.partners(r, name))
     out()
     out(f"peer '{name}' rotated: {ip} (new keypair + psk)")
     out("import the new profile on the device — the old vpn:// link "
@@ -566,6 +569,178 @@ def cmd_dns_list(args):
     ok(records=[{"name": n, "ip": ip} for n, ip in records])
 
 
+# --- mesh: explicit device-to-device links (Epic 4, T1) --------------------------
+
+def _mesh_env_file(r):
+    env_file = os.path.join(r, "config", "server.env")
+    if not os.path.exists(env_file):
+        fail("not initialized (run: awg-mesh init)")
+    return env_file
+
+
+def _peer_names(r):
+    return {p["name"] for p in peers.load(os.path.join(r, "config", "peers.db"))}
+
+
+def _build_p2p(r, env_file, name):
+    """Write <name>-mesh-p2p.{conf,vpn}; returns (written, managed, static,
+    skipped). Raises MeshError when the device has no identity to reuse."""
+    plist = peers.load(os.path.join(r, "config", "peers.db"))
+    peer = next((p for p in plist if p["name"] == name), None)
+    if peer is None:
+        raise MeshError(f"no such peer: {name}")
+    prefix = os.path.join(r, "config", "peers", name)
+    priv, psk = mesh.read_identity(f"{prefix}-mesh.conf")
+    managed, static, skipped = mesh.direct_peers(r, name, plist, _utc_now())
+    os.makedirs(os.path.dirname(prefix), exist_ok=True)
+    written = profile.generate_p2p_profile(
+        env_file=env_file, name=name, ip=peer["ip"], priv=priv,
+        pub=peer["pub"], psk=psk, managed=managed, static=static,
+        out_prefix=prefix)
+    return written, managed, static, skipped
+
+
+def _refresh_p2p(r, env_file, names):
+    """Re-render p2p profiles after a topology/endpoint/key change. Devices
+    without links lose their p2p files; devices without an identity are
+    reported, never fatal (the change itself already succeeded)."""
+    for name in dict.fromkeys(names):
+        prefix = os.path.join(r, "config", "peers", name)
+        if name not in _peer_names(r):
+            continue
+        if not mesh.partners(r, name):
+            for suffix in ("mesh-p2p.conf", "mesh-p2p.vpn"):
+                try:
+                    os.unlink(f"{prefix}-{suffix}")
+                except FileNotFoundError:
+                    pass
+            continue
+        try:
+            _build_p2p(r, env_file, name)
+        except MeshError as e:
+            say(f"warning: p2p profile for '{name}' not rendered: {e}")
+
+
+def cmd_mesh_link_add(args):
+    r = root()
+    env_file = _mesh_env_file(r)
+    mesh.add_link(r, args.a, args.b, _peer_names(r), _utc_now())
+    _refresh_p2p(r, env_file, [args.a, args.b])
+    say(f"linked {args.a} <-> {args.b}; re-import the p2p profile on both "
+        "devices (managed agents pick it up on their own)")
+    ok(linked=[args.a, args.b])
+
+
+def cmd_mesh_link_remove(args):
+    r = root()
+    env_file = _mesh_env_file(r)
+    mesh.remove_link(r, args.a, args.b)
+    _refresh_p2p(r, env_file, [args.a, args.b])
+    say(f"unlinked {args.a} <-> {args.b}; re-import the p2p profile on both "
+        "devices")
+    ok(unlinked=[args.a, args.b])
+
+
+def cmd_mesh_link_list(args):
+    r = root()
+    _mesh_env_file(r)
+    links = mesh.load_links(r)
+    if not JSON_MODE and not links:
+        out("no links")
+    for l in links:
+        out(f"{l['a']:<20} <-> {l['b']:<20} {l['created']}")
+    ok(links=links)
+
+
+def cmd_mesh_endpoint_set(args):
+    r = root()
+    env_file = _mesh_env_file(r)
+    mesh.set_static(r, args.name, args.endpoint, args.note, _peer_names(r))
+    affected = mesh.partners(r, args.name)
+    _refresh_p2p(r, env_file, affected)
+    if affected:
+        say("partner profiles re-rendered: " + ", ".join(affected))
+    ok(name=args.name, endpoint=mesh.parse_endpoint(args.endpoint),
+       affected=affected)
+
+
+def cmd_mesh_endpoint_unset(args):
+    r = root()
+    env_file = _mesh_env_file(r)
+    mesh.unset_static(r, args.name)
+    affected = mesh.partners(r, args.name)
+    _refresh_p2p(r, env_file, affected)
+    if affected:
+        say("partner profiles re-rendered: " + ", ".join(affected))
+    ok(unset=args.name, affected=affected)
+
+
+def _endpoint_rows(r):
+    now = _utc_now()
+    static = mesh.load_static(r)
+    observed = mesh.load_observed(r, now)
+    rows = []
+    for name in sorted(_peer_names(r)):
+        ep, src = mesh.resolve_endpoint(name, static, observed)
+        rows.append({"name": name, "endpoint": ep, "source": src,
+                     "static": static.get(name, {}).get("endpoint"),
+                     "observed": observed.get(name),
+                     "note": static.get(name, {}).get("note", "")})
+    return rows
+
+
+def cmd_mesh_endpoint_list(args):
+    r = root()
+    _mesh_env_file(r)
+    rows = _endpoint_rows(r)
+    for row in rows:
+        out(f"{row['name']:<20} {row['endpoint'] or '-':<24} "
+            f"{row['source'] or 'none'}")
+    ok(endpoints=rows)
+
+
+def cmd_mesh_config(args):
+    r = root()
+    env_file = _mesh_env_file(r)
+    if not mesh.partners(r, args.device):
+        fail(f"{args.device} has no links (see: awg-mesh mesh link add)")
+    written, managed, static, skipped = _build_p2p(r, env_file, args.device)
+    out()
+    out(f"wrote {written[0]} (managed: {len(managed)} direct peers)")
+    out(f"wrote {written[1]} (app, experimental: {len(static)} static peers)")
+    if skipped:
+        out("no endpoint yet (hub-only until set): " + ", ".join(skipped))
+    ok(written=written, managed=[m["name"] for m in managed],
+       static=[m["name"] for m in static], skipped=skipped)
+
+
+def cmd_mesh_status(args):
+    r = root()
+    _mesh_env_file(r)
+    now = _utc_now()
+    static = mesh.load_static(r)
+    observed = mesh.load_observed(r, now)
+    rows = []
+    for l in mesh.load_links(r):
+        ends = {}
+        for n in (l["a"], l["b"]):
+            ends[n] = mesh.resolve_endpoint(n, static, observed)
+        missing = [n for n, (ep, _) in ends.items() if ep is None]
+        rows.append({
+            "a": l["a"], "b": l["b"],
+            "endpoints": {n: {"endpoint": ep, "source": src}
+                          for n, (ep, src) in ends.items()},
+            "direct_capable": not missing,
+            "missing": missing})
+    if not JSON_MODE and not rows:
+        out("no links")
+    for row in rows:
+        verdict = ("direct-capable" if row["direct_capable"] else
+                   "hub-only (no endpoint for " + ", ".join(row["missing"]) + ")")
+        out(f"{row['a']:<20} <-> {row['b']:<20} {verdict}")
+    ok(links=rows)
+
+
 def cmd_peer_revoke(args):
     r = root()
     env_file = os.path.join(r, "config", "server.env")
@@ -579,12 +754,16 @@ def cmd_peer_revoke(args):
         if not confirm(f"revoke peer '{name}'? its devices will lose access"):
             fail("aborted")
         tx.remove(name)
+    former = mesh.prune_peer(r, name)
     render.render_all()
     apply_revoke(env)
     for path in (glob.glob(os.path.join(r, "config", "peers", f"{name}-*.vpn"))
                  + glob.glob(os.path.join(r, "config", "peers", f"{name}-*.conf"))):
         os.unlink(path)
     say(f"peer '{name}' revoked")
+    if former:
+        _refresh_p2p(r, env_file, former)
+        say("links dropped; re-import the p2p profile on: " + ", ".join(former))
     ok(revoked=name)
 
 
@@ -723,6 +902,40 @@ def build_parser():
     drr.set_defaults(fn=cmd_dns_remove)
     dl = dn_sub.add_parser("list", help="custom records")
     dl.set_defaults(fn=cmd_dns_list)
+
+    mp = sub.add_parser("mesh", help="explicit device-to-device links "
+                                     "(direct paths, hub stays the fallback)")
+    mp_sub = mp.add_subparsers(dest="mesh_cmd", required=True)
+    ml = mp_sub.add_parser("link", help="topology: explicit device pairs")
+    ml_sub = ml.add_subparsers(dest="link_cmd", required=True)
+    mla = ml_sub.add_parser("add", help="link two devices")
+    mla.add_argument("a")
+    mla.add_argument("b")
+    mla.set_defaults(fn=cmd_mesh_link_add)
+    mlr = ml_sub.add_parser("remove", help="unlink two devices")
+    mlr.add_argument("a")
+    mlr.add_argument("b")
+    mlr.set_defaults(fn=cmd_mesh_link_remove)
+    mll = ml_sub.add_parser("list", help="links")
+    mll.set_defaults(fn=cmd_mesh_link_list)
+    me = mp_sub.add_parser("endpoint", help="stable endpoints (hand-marked)")
+    me_sub = me.add_subparsers(dest="endpoint_cmd", required=True)
+    mes = me_sub.add_parser("set", help="mark a device's stable endpoint")
+    mes.add_argument("name")
+    mes.add_argument("endpoint", metavar="host:port")
+    mes.add_argument("--note", default="")
+    mes.set_defaults(fn=cmd_mesh_endpoint_set)
+    meu = me_sub.add_parser("unset", help="drop a stable endpoint")
+    meu.add_argument("name")
+    meu.set_defaults(fn=cmd_mesh_endpoint_unset)
+    mel = me_sub.add_parser("list", help="static + observed endpoints")
+    mel.set_defaults(fn=cmd_mesh_endpoint_list)
+    mc = mp_sub.add_parser("config", help="render <device>-mesh-p2p.{conf,vpn}")
+    mc.add_argument("device")
+    mc.set_defaults(fn=cmd_mesh_config)
+    mst = mp_sub.add_parser("status", help="links and whether a direct path "
+                                           "is possible")
+    mst.set_defaults(fn=cmd_mesh_status)
 
     m = sub.add_parser("monitoring", help="cron stats + watchdog")
     m.add_argument("action", choices=["install", "uninstall"])

@@ -72,7 +72,7 @@ awg-mesh --server my-vps peer list --json
 The local CLI runs `ssh my-vps 'cd ~ && awg-mesh <args>'` with the system ssh
 client (aliases and keys come from `~/.ssh/config`) and passes
 stdout/stderr/exit codes through. After a mutating command (`init`, `adopt`,
-`peer add|rename|revoke|rotate`) the remote `config/peers/` is mirrored back
+`peer add|rename|revoke|rotate`, `mesh link|endpoint|config`) the remote `config/peers/` is mirrored back
 with scp, so the `.vpn` profiles land next to the local checkout. Set
 `AWG_MESH_REMOTE_ROOT` when the mesh root on the server is not the home
 directory. `skill` and `--version` always run locally.
@@ -112,6 +112,24 @@ directory. `skill` and `--version` always run locally.
   second `--addn-hosts` file dnsmasq re-reads on SIGHUP. Names must not
   collide with peer or hub names; the file is user data — render never
   overwrites it.
+- `awg-mesh mesh ...` adds optional direct device-to-device paths; the hub
+  stays the rendezvous and fallback. Topology is explicit pairs only:
+  `mesh link add|remove|list <a> <b>`. `mesh endpoint set <name> host:port
+  [--note ..]` marks a stable endpoint by hand (`unset`, `list`). `mesh
+  config <device>` writes `<device>-mesh-p2p.conf` (managed: every partner
+  with a live endpoint) and `<device>-mesh-p2p.vpn` (app, EXPERIMENTAL:
+  static-endpoint partners only). `mesh status` shows per link whether a
+  direct path is possible. Facts to respect: a direct /32 is more specific
+  than the hub /24, so a dead endpoint blackholes that peer — nothing
+  switches back to the hub on its own, which is why a partner with no
+  endpoint is left out and observed endpoints must be fresh. Direct peers
+  carry no PSK (the hub PSK is never shared). A p2p profile reuses the
+  identity of the device's existing `<device>-mesh.conf`; adopted devices
+  have none — run `peer rotate` first. Link/endpoint changes and `peer
+  rotate` re-render affected p2p profiles; `peer revoke` drops the peer's
+  links and static endpoint; `peer rename` rewrites them. Devices must
+  re-import the p2p profile after any change. Runtime pieces (collector,
+  coord sidecar, device agent) are not built yet.
 - Obfuscation params (Jc/Jmin/Jmax/S1/S2/H1-H4) are per-deployment
   random, set at `init`, and must match on server AND every client.
   Regenerating them invalidates all existing profiles.

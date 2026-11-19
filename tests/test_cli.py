@@ -189,3 +189,91 @@ def test_dns_add_duplicate(mesh, capsys):
     assert run(["dns", "add", "nas", "100.64.0.50"]) == 0
     assert run(["dns", "add", "nas", "100.64.0.51"]) == 1
     assert "record already exists: nas.awg" in capsys.readouterr().err
+
+
+# --- mesh link / endpoint / config ---------------------------------------------
+
+def _issue(root, name):
+    """Issue the regular profiles for a fixture peer (source of identity)."""
+    from awg_mesh import profile
+    p = next(x for x in peers.load(str(root / "config" / "peers.db"))
+             if x["name"] == name)
+    profile.generate_profiles(
+        env_file=str(root / "config" / "server.env"), name=name, ip=p["ip"],
+        priv=f"{name}-PRIV", pub=p["pub"], psk=p["psk"],
+        out_prefix=str(root / "config" / "peers" / name))
+
+
+def _p2p(root, name, ext="conf"):
+    return root / "config" / "peers" / f"{name}-mesh-p2p.{ext}"
+
+
+def test_mesh_link_endpoint_config_flow(mesh, capsys):
+    root, _ = mesh
+    for n in ("laptop-test", "hub-test"):
+        _issue(root, n)
+    assert run(["--json", "mesh", "link", "add", "laptop-test", "hub-test"]) == 0
+    assert last_json(capsys)["linked"] == ["laptop-test", "hub-test"]
+    # no endpoint for the partner yet: profile is hub-only, nothing guessed
+    assert _p2p(root, "laptop-test").read_text().count("[Peer]") == 1
+
+    assert run(["--json", "mesh", "endpoint", "set", "hub-test",
+                "203.0.113.50:51820", "--note", "port-forward"]) == 0
+    assert last_json(capsys)["affected"] == ["laptop-test"]
+    conf = _p2p(root, "laptop-test").read_text()
+    assert conf.count("[Peer]") == 2
+    assert "AllowedIPs = 100.64.0.2/32" in conf
+    assert "Endpoint = 203.0.113.50:51820" in conf
+    assert "laptop-test-PRIV" in conf            # identity reused, not new keys
+    assert "hub-test-PRIV" not in conf
+
+    from awg_mesh import profile
+    prof = profile.decode_profile(_p2p(root, "laptop-test", "vpn").read_text())
+    last = json.loads(prof["containers"][0]["awg"]["last_config"])
+    assert "203.0.113.50:51820" in last["config"]
+
+    assert run(["--json", "mesh", "status"]) == 0
+    row = last_json(capsys)["links"][0]
+    assert row["direct_capable"] is False and row["missing"] == ["laptop-test"]
+
+
+def test_mesh_config_without_links_fails(mesh, capsys):
+    assert run(["--json", "mesh", "config", "laptop-test"]) == 1
+    assert "no links" in last_json(capsys)["error"]
+
+
+def test_mesh_link_without_identity_warns_not_fails(mesh, capsys):
+    root, _ = mesh                      # no profiles issued (adopted-like)
+    assert run(["mesh", "link", "add", "laptop-test", "hub-test"]) == 0
+    assert not _p2p(root, "laptop-test").exists()
+    assert "peer rotate" in capsys.readouterr().err
+
+
+def test_mesh_link_remove_deletes_p2p_files(mesh, capsys):
+    root, _ = mesh
+    for n in ("laptop-test", "hub-test"):
+        _issue(root, n)
+    run(["mesh", "link", "add", "laptop-test", "hub-test"])
+    assert _p2p(root, "laptop-test").exists()
+    run(["mesh", "link", "remove", "laptop-test", "hub-test"])
+    assert not _p2p(root, "laptop-test").exists()
+
+
+def test_revoke_prunes_links_and_refreshes_partners(mesh, capsys):
+    root, _ = mesh
+    for n in ("laptop-test", "hub-test"):
+        _issue(root, n)
+    run(["mesh", "endpoint", "set", "hub-test", "203.0.113.50:51820"])
+    run(["mesh", "link", "add", "laptop-test", "hub-test"])
+    assert run(["--json", "peer", "revoke", "hub-test"]) == 0
+    assert json.load(open(root / "config" / "mesh-links.json"))["links"] == []
+    assert json.load(open(root / "config" / "mesh-static.json"))["endpoints"] == {}
+    assert not _p2p(root, "laptop-test").exists()
+
+
+def test_rename_rewrites_links(mesh, capsys):
+    root, _ = mesh
+    run(["mesh", "link", "add", "laptop-test", "hub-test"])
+    assert run(["peer", "rename", "hub-test", "nas"]) == 0
+    links = json.load(open(root / "config" / "mesh-links.json"))["links"]
+    assert {links[0]["a"], links[0]["b"]} == {"laptop-test", "nas"}

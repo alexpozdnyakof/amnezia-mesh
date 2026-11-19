@@ -75,7 +75,10 @@ def decode_profile(url: str) -> dict:
     return json.loads(zlib.decompress(raw[4:4 + length]))
 
 
-def render_client_conf(env, peer_ip, allowed, priv, psk, server_pub):
+def render_client_conf(env, peer_ip, allowed, priv, psk, server_pub, direct=()):
+    """Client .conf. `direct` = linked partners (dicts pub/ip/endpoint) rendered
+    as extra [Peer] blocks after the hub: /32, no PSK (the hub PSK is a
+    pair secret with the hub and must never reach another device)."""
     mtu = env.get("MTU", "1280")
     keepalive = env.get("CLIENT_KEEPALIVE", "15-20")
     lines = [
@@ -98,12 +101,23 @@ def render_client_conf(env, peer_ip, allowed, priv, psk, server_pub):
         f"Endpoint = {env['AWG_MESH_HOST']}:{env['AWG_MESH_PORT']}",
         f"PersistentKeepalive = {keepalive}",
     ]
+    for d in direct:
+        lines += [
+            "",
+            "[Peer]",
+            f"PublicKey = {d['pub']}",
+            f"AllowedIPs = {d['ip']}/32",
+            f"Endpoint = {d['endpoint']}",
+            f"PersistentKeepalive = {keepalive}",
+        ]
     return "\n".join(lines) + "\n"
 
 
-def build_app_profile(env, name, ptype, peer_ip, allowed, priv, pub, psk, server_pub):
+def build_app_profile(env, name, ptype, peer_ip, allowed, priv, pub, psk,
+                      server_pub, direct=()):
     obf = {k: env[f"OBF_{k.upper()}"] for k in OBF_KEYS if env.get(f"OBF_{k.upper()}")}
-    conf = render_client_conf(env, peer_ip, allowed, priv, psk, server_pub)
+    conf = render_client_conf(env, peer_ip, allowed, priv, psk, server_pub,
+                              direct)
     last_config = dict(obf)
     last_config.update({k: "" for k in I_KEYS})
     last_config.update({
@@ -162,6 +176,31 @@ def generate_profiles(env_file, name, ip, priv, pub, psk, out_prefix):
             with open(path, "w") as f:
                 f.write(content)
             written.append(path)
+    return written
+
+
+def generate_p2p_profile(env_file, name, ip, priv, pub, psk, managed, static,
+                         out_prefix):
+    """Write <out_prefix>-mesh-p2p.{conf,vpn}: hub (mesh /24) + linked partners.
+
+    .conf (managed mode) carries every partner that has a live endpoint;
+    .vpn (app mode, experimental) only `static` partners — a snapshot cannot
+    follow a moving endpoint, and a stale /32 silently blackholes traffic.
+    """
+    env = load_env(env_file)
+    env["HUB_IP"] = str(ipaddress.ip_network(env["AWG_MESH_SUBNET"]).network_address + 1)
+    allowed = env["AWG_MESH_SUBNET"]
+    conf = render_client_conf(env, ip, allowed, priv, psk, env["SERVER_PUB"],
+                              managed)
+    prof = build_app_profile(env, name, "mesh-p2p", ip, allowed, priv, pub,
+                             psk, env["SERVER_PUB"], static)
+    outputs = {"mesh-p2p.conf": conf, "mesh-p2p.vpn": encode_profile(prof)}
+    written = []
+    for suffix, content in outputs.items():
+        path = f"{out_prefix}-{suffix}"
+        with open(path, "w") as f:
+            f.write(content)
+        written.append(path)
     return written
 
 

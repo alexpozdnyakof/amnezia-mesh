@@ -102,6 +102,10 @@ and `{"ok": false, "error": "..."}`.
 | `awg-mesh peer revoke <name>` | Remove device (awg + dns containers restarted — removing peers from the userspace daemon via UAPI can silently wedge fresh handshakes; profiles deleted) |
 | `awg-mesh doctor [--json]` | Docker, containers, listen port, ip_forward, MagicDNS, port publishing |
 | `awg-mesh dns add <name> <ipv4>` / `dns remove <name>` / `dns list` | Custom MagicDNS records on top of `<name>.<domain>` (`nas.awg` → any IPv4) in `config/custom.hosts` — second dnsmasq `--addn-hosts`, SIGHUP-reloaded, no restart |
+| `awg-mesh mesh link add\|remove\|list <a> <b>` | Explicit device pairs that may talk directly (hub stays the fallback) |
+| `awg-mesh mesh endpoint set <name> <host:port> [--note T]` / `unset` / `list` | Hand-marked stable endpoints (win over observed ones) |
+| `awg-mesh mesh config <device>` | Write `<device>-mesh-p2p.conf` (every partner with a live endpoint) and `-mesh-p2p.vpn` (app import, **experimental**, static-endpoint partners only). Reuses the device's existing `-mesh.conf` identity; direct peers carry no PSK |
+| `awg-mesh mesh status` | Per link: is a direct path possible, or hub-only and why |
 | `awg-mesh monitoring install\|uninstall` | Cron stats (`/var/log/amnezia-mesh-stats.log`) + watchdog |
 | `awg-mesh adopt (--container C \| --config F --image IMG) --host H [--port P] [--dns1 D] [--dns2 D] [--rdp-reject]` | Migrate an existing AmneziaWG server under awg-mesh management (see below) |
 
@@ -114,7 +118,7 @@ awg-mesh --server my-vps peer list --json   # or: export AWG_MESH_SSH=my-vps
 The local CLI runs `ssh my-vps 'cd ~ && awg-mesh <args>'` with the system ssh
 client (aliases and keys from `~/.ssh/config`) and passes stdout/stderr/exit
 codes through — no logic is duplicated locally. After a mutating command
-(`init`, `adopt`, `peer add|rename|revoke|rotate`) the remote `config/peers/` is
+(`init`, `adopt`, `peer add|rename|revoke|rotate`, `mesh link|endpoint|config`) the remote `config/peers/` is
 mirrored back with scp, so the `.vpn` profiles land next to the local
 checkout. `AWG_MESH_REMOTE_ROOT` sets the mesh root on the server (default
 `~`). `skill` and `--version` always run locally.
@@ -212,6 +216,13 @@ This is hub-and-spoke (routed mesh), not P2P: it works behind any NAT,
 including carrier-grade mobile NATs where hole punching is useless.
 `PersistentKeepalive=25` on both sides keeps NAT mappings alive so devices are
 mutually reachable.
+
+**Direct paths (opt-in, work in progress).** `mesh link add a b` adds a second
+`[Peer]` for the partner (`/32`, no PSK) to the p2p profiles. Caveat: that `/32`
+beats the hub's `/24`, so a dead direct endpoint blackholes the partner —
+there is no automatic fallback yet (planned device agent). Use it with stable
+endpoints (`mesh endpoint set`) and switch back to the regular profile by hand
+if a path dies. Symmetric NAT on both sides cannot be punched; stay on the hub.
 
 ## Hardening notes
 
