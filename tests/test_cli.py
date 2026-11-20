@@ -13,6 +13,9 @@ def _reset_json_mode(monkeypatch):
     monkeypatch.setattr(cli, "JSON_MODE", False)
 
 
+stdin_log = []  # (compose args, stdin) for calls that fed stdin
+
+
 @pytest.fixture
 def mesh(tmp_path, monkeypatch):
     """Initialized throwaway root: server.env + peers.db, faked
@@ -24,9 +27,12 @@ def mesh(tmp_path, monkeypatch):
     shutil.copy(os.path.join(here, "fixtures", "server.env"), cfg / "server.env")
     shutil.copy(os.path.join(here, "fixtures", "peers.db"), cfg / "peers.db")
     calls = []
+    stdin_log.clear()
 
-    def fake_compose(r, env, *args):
+    def fake_compose(r, env, *args, input_text=None):
         calls.append(list(args))
+        if input_text is not None:
+            stdin_log.append((list(args), input_text))
         return types.SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(cli.compose_mod, "compose", fake_compose)
@@ -277,3 +283,14 @@ def test_rename_rewrites_links(mesh, capsys):
     assert run(["peer", "rename", "hub-test", "nas"]) == 0
     links = json.load(open(root / "config" / "mesh-links.json"))["links"]
     assert {links[0]["a"], links[0]["b"]} == {"laptop-test", "nas"}
+
+
+def test_peer_add_applies_psk_live(mesh, capsys):
+    """Regression: restart-free add used to omit the PSK, so the new peer
+    could not handshake until the hub restarted."""
+    root, calls = mesh
+    assert run(["peer", "add", "fresh"]) == 0
+    args, stdin = next((a, i) for a, i in stdin_log if "preshared-key" in a)
+    assert args[args.index("preshared-key") + 1] == "/dev/stdin"
+    assert "allowed-ips" in args and "NEWPSK" not in args  # never in argv
+    assert stdin == "NEWPSK\n"

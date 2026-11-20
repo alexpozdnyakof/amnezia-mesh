@@ -67,8 +67,9 @@ def apply_add(env, peer):
     peers.hosts for the new MagicDNS record."""
     r = root()
     compose_mod.compose(r, env, "exec", "-T", "awg", "awg", "set", "awg0",
-                        "peer", peer["pub"], "allowed-ips",
-                        f"{peer['ip']}/32")
+                        "peer", peer["pub"], "preshared-key", "/dev/stdin",
+                        "allowed-ips", f"{peer['ip']}/32",
+                        input_text=peer["psk"] + "\n")
     say("applied via awg set")
     reload_dns(env)
     say("dns records reloaded")
@@ -355,7 +356,7 @@ def cmd_peer_add(args):
                 "created": created})
 
     render.render_all()
-    apply_add(env, {"pub": pub, "ip": ip})
+    apply_add(env, {"pub": pub, "ip": ip, "psk": psk})
 
     prefix = os.path.join(r, "config", "peers", name)
     profile.generate_profiles(env_file=env_file, name=name, ip=ip,
